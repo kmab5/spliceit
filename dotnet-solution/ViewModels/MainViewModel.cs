@@ -59,6 +59,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private double _playheadPixels;
 
+    /// <summary>Canvas.Left for the needle control, offset by half its width.</summary>
+    [ObservableProperty]
+    private double _playheadCanvasLeft = -9.5;
+
     [ObservableProperty]
     private double _loopStartSeconds = 0.0;
 
@@ -72,7 +76,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _isMasterMuted = false;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSelectedClip))]
     private AudioClip? _selectedClip;
+
+    /// <summary>
+    /// Plain bool for XAML visibility. Avoids depending on ObjectConverters,
+    /// whose XAML namespace mapping varies between Avalonia versions.
+    /// </summary>
+    public bool HasSelectedClip => SelectedClip is not null;
 
     [ObservableProperty]
     private string _statusMessage = "Ready - .NET 9 & Avalonia 11 Audio Engine";
@@ -221,8 +232,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RecalculatePlayheadPixels();
     }
 
-    private void RecalculatePlayheadPixels() =>
+    private void RecalculatePlayheadPixels()
+    {
         PlayheadPixels = CurrentPlayheadSeconds * ZoomFactor;
+        // The needle control is 19px wide; centre it on the true position.
+        PlayheadCanvasLeft = PlayheadPixels - 9.5;
+    }
 
     partial void OnCurrentPlayheadSecondsChanged(double value) => RecalculatePlayheadPixels();
 

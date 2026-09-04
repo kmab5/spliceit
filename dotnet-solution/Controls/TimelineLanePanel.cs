@@ -37,7 +37,7 @@ public sealed class TimelineLanePanel : Panel
         {
             child.Measure(Size.Infinity);
 
-            if (child is AudioClipView view && view.Clip is { } clip)
+            if (child is AudioClipView view && view.ClipModel is { } clip)
             {
                 widest = Math.Max(widest, (clip.TimelineStartSeconds + clip.ClipDurationSeconds) * pps);
             }
@@ -57,7 +57,7 @@ public sealed class TimelineLanePanel : Panel
 
         foreach (var child in Children)
         {
-            if (child is not AudioClipView view || view.Clip is not { } clip)
+            if (child is not AudioClipView view || view.ClipModel is not { } clip)
             {
                 child.Arrange(new Rect(0, 0, 0, 0));
                 continue;

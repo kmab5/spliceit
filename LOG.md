@@ -2,6 +2,86 @@
 
 ---
 
+# Turn 7 — Phase 2b: interaction gaps closed + CS0108 fix
+
+**Build status: Phase 2a compiled green** (2 warnings, both addressed below).
+
+> ### ⚠️ Not compile-verified
+> Validated: XAML well-formedness, brace/paren balance across all 30 `.cs` files.
+
+**Scope:** 1 file added, 5 modified.
+
+---
+
+## 1. `CS0108` — not cosmetic
+
+```
+warning CS0108: 'AudioClipView.Clip' hides inherited member 'Visual.Clip'
+```
+
+`Visual.Clip` is the render-clipping `Geometry`. Shadowing it with an `AudioClip` property means any XAML setting `Clip="..."` on this control is genuinely ambiguous, and a future style targeting `Clip` could silently bind to the wrong member. Suppressing with `new` would have hidden a real hazard.
+
+Renamed to `ClipModel` (property, `StyledProperty`, and all usages in `TimelineLanePanel` and `MainWindow.axaml`). Both warnings clear.
+
+## 2. Draggable playhead — `Controls/PlayheadView.cs`
+
+Phase 2a could only scrub from the ruler. The needle is now grabbable anywhere over the lanes, with a handle at the top and snap-to-grid.
+
+**Design note.** The obvious approach — a full-width overlay with a custom hit-test — needs `ICustomHitTest`, whose XAML/namespace details I can't verify from here. Instead the control is **19 px wide** and positioned on a `Canvas` at `PlayheadCanvasLeft`, so clips either side receive pointer input naturally with no hit-test trickery. Dragging is delta-based, since an absolute position inside a control that moves with the playhead carries no timeline meaning.
+
+## 3. Ctrl/Alt/Cmd + wheel zoom
+
+`ZoomByDelta` has existed since Phase 2a with nothing calling it. Wired via `PointerWheelChanged` on the lane scroller in `MainWindow.axaml.cs`.
+
+## 4. Clip context menu
+
+Right-click a clip: Split at Playhead, Duplicate, Delete.
+
+## 5. Resizable track header column
+
+Column definitions became `220,3,*` with a `GridSplitter` spanning both rows. Because the ruler gutter, headers and lanes share one grid, dragging resizes all three consistently.
+
+## 6. Clip Inspector tab
+
+New bottom-dock tab: name, start/length/source-offset readouts, gain and fade sliders, and split/duplicate/delete buttons.
+
+Visibility uses a plain `HasSelectedClip` bool on the view model rather than `ObjectConverters.IsNull` — that converter's XAML namespace mapping varies between Avalonia versions, and a bool has no such ambiguity.
+
+---
+
+## Gaps from Phase 2a now closed
+
+| Gap | Status |
+|---|---|
+| Playhead not draggable in lanes | ✅ `PlayheadView` |
+| `ZoomByDelta` never invoked | ✅ wheel handler |
+| No clip context menu | ✅ |
+| Fixed 220 px header column | ✅ `GridSplitter` |
+| Playhead height hardcoded 4000 px | ⚠️ still hardcoded — works, inelegant |
+
+---
+
+## Still missing before Phase 2 is done
+
+- **Export dialog** — export still goes straight to a save picker with fixed 24-bit WAV. No format, sample-rate or LUFS selection.
+- **Media pool** — imported files always create a new track; no browsable pool, no audition, no drag-to-lane.
+- **Master timetrack** with section markers.
+- **Right tools sidebar.**
+- **Keyboard shortcuts** — Space, S, Home/End, Delete are not bound.
+
+---
+
+## Next — Phase 2c, then Phase 3
+
+Phase 2c: export dialog, media pool, master timetrack, keyboard shortcuts.
+
+Phase 3: undo/redo (the `EditCommittedCommand` hook is already in place, firing once per gesture), clipboard, FFmpeg multi-format encode, metadata + cue chunks, and mirroring Turn 1's multiband and mid/side fixes into `MasteringChain.cs` — which still ignores `DspSettings.Multiband` entirely.
+
+Phase 4: Concat mode behind a top-bar mode switcher.
+
+---
+---
+
 # Turn 6 — Avalonia/C# Phase 2a: the timeline becomes usable
 
 **Goal:** turn the static clip rectangles into a real arrangement view — zoom, scrub, drag, trim — with a design-token system underneath so Phase 2b isn't fighting hardcoded colours.

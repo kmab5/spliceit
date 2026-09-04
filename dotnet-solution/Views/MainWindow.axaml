@@ -110,7 +110,13 @@
         </Border>
 
         <!-- 2. MULTI-TRACK ARRANGEMENT TIMELINE -->
-        <Grid Grid.Row="1" RowDefinitions="28,*" ColumnDefinitions="220,*">
+        <Grid Grid.Row="1" RowDefinitions="28,*" ColumnDefinitions="220,3,*">
+
+            <!-- Drag to resize the track header column -->
+            <GridSplitter Grid.Row="0" Grid.RowSpan="2" Grid.Column="1"
+                          Background="#2D2D2F" ResizeDirection="Columns"
+                          HorizontalAlignment="Stretch" ZIndex="40"
+                          ToolTip.Tip="Drag to resize track headers"/>
 
             <!-- Ruler gutter -->
             <Border Grid.Row="0" Grid.Column="0" Background="#121214"
@@ -129,7 +135,7 @@
                 lane viewer's horizontal offset, which keeps it perfectly locked
                 to the lanes without two scrollers fighting over a shared offset.
             -->
-            <Border Grid.Row="0" Grid.Column="1" Background="#121214"
+            <Border Grid.Row="0" Grid.Column="2" Background="#121214"
                     BorderBrush="#2D2D2F" BorderThickness="0,0,0,1" ClipToBounds="True">
                 <controls:TimelineRuler
                     x:Name="Ruler"
@@ -212,7 +218,8 @@
             </Border>
 
             <!-- Lanes: the single source of scroll offset for the whole timeline -->
-            <ScrollViewer Grid.Row="1" Grid.Column="1" x:Name="LaneScroll"
+            <ScrollViewer Grid.Row="1" Grid.Column="2" x:Name="LaneScroll"
+                          PointerWheelChanged="OnLaneWheel"
                           HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                           Background="#141416">
                 <Panel Width="{Binding TimelineWidthPixels}" VerticalAlignment="Top">
@@ -230,13 +237,25 @@
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate x:DataType="models:AudioClip">
                                                 <controls:AudioClipView
-                                                    Clip="{Binding}"
+                                                    ClipModel="{Binding}"
                                                     OwnerTrack="{Binding $parent[ItemsControl].DataContext}"
                                                     PixelsPerSecond="{Binding $parent[Window].((vm:MainViewModel)DataContext).ZoomFactor}"
                                                     SnapToGrid="{Binding $parent[Window].((vm:MainViewModel)DataContext).IsSnapToGrid}"
                                                     GridSizeSeconds="{Binding $parent[Window].((vm:MainViewModel)DataContext).GridSizeSeconds}"
                                                     SelectCommand="{Binding $parent[Window].((vm:MainViewModel)DataContext).SelectClipCommand}"
-                                                    EditCommittedCommand="{Binding $parent[Window].((vm:MainViewModel)DataContext).CommitClipEditCommand}"/>
+                                                    EditCommittedCommand="{Binding $parent[Window].((vm:MainViewModel)DataContext).CommitClipEditCommand}">
+                                                    <controls:AudioClipView.ContextMenu>
+                                                        <ContextMenu>
+                                                            <MenuItem Header="Split at Playhead"
+                                                                      Command="{Binding $parent[Window].((vm:MainViewModel)DataContext).SplitClipAtPlayheadCommand}"/>
+                                                            <MenuItem Header="Duplicate"
+                                                                      Command="{Binding $parent[Window].((vm:MainViewModel)DataContext).DuplicateSelectedClipCommand}"/>
+                                                            <Separator/>
+                                                            <MenuItem Header="Delete Clip"
+                                                                      Command="{Binding $parent[Window].((vm:MainViewModel)DataContext).DeleteSelectedClipCommand}"/>
+                                                        </ContextMenu>
+                                                    </controls:AudioClipView.ContextMenu>
+                                                </controls:AudioClipView>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
@@ -245,11 +264,19 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
 
-                    <!-- Playhead needle spanning every lane -->
-                    <Canvas IsHitTestVisible="False">
-                        <Rectangle Width="1.5" Fill="#FF4444" Height="4000"
-                                   Canvas.Top="0"
-                                   Canvas.Left="{Binding PlayheadPixels}"/>
+                    <!-- Draggable playhead. Hit-transparent except near the needle,
+                         so clips underneath still receive pointer input. -->
+                    <Canvas>
+                        <controls:PlayheadView
+                            Canvas.Left="{Binding PlayheadCanvasLeft}"
+                            Canvas.Top="0"
+                            Height="4000"
+                            CurrentTime="{Binding CurrentPlayheadSeconds}"
+                            PixelsPerSecond="{Binding ZoomFactor}"
+                            TotalDuration="{Binding TimelineDurationSeconds}"
+                            SnapToGrid="{Binding IsSnapToGrid}"
+                            GridSizeSeconds="{Binding GridSizeSeconds}"
+                            ScrubCommand="{Binding ScrubToCommand}"/>
                     </Canvas>
                 </Panel>
             </ScrollViewer>
@@ -303,7 +330,67 @@
                 </Grid>
             </TabItem>
 
-            <!-- Tab 2: TagLibSharp Metadata -->
+            <!-- Tab 2: Clip Inspector -->
+            <TabItem Header="Clip Inspector">
+                <Panel Margin="12">
+                    <TextBlock Text="No clip selected — click a clip on the timeline."
+                               Foreground="#8E9299" FontSize="12"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               IsVisible="{Binding !HasSelectedClip}"/>
+
+                    <Grid ColumnDefinitions="*,*,*" RowDefinitions="Auto,*"
+                          IsVisible="{Binding HasSelectedClip}">
+
+                        <Border Grid.Row="1" Grid.Column="0" Background="#1A1A1C" CornerRadius="6" Padding="12" Margin="0,0,6,0">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="CLIP" FontWeight="Bold" FontSize="10" Foreground="#8E9299"/>
+                                <TextBox Text="{Binding SelectedClip.Name}" Background="#121214" FontSize="12"/>
+                                <TextBlock Text="{Binding SelectedClip.TimelineStartSeconds, StringFormat='Start: {0:F3} s'}"
+                                           FontFamily="Consolas" FontSize="11" Foreground="#E0E0E0"/>
+                                <TextBlock Text="{Binding SelectedClip.ClipDurationSeconds, StringFormat='Length: {0:F3} s'}"
+                                           FontFamily="Consolas" FontSize="11" Foreground="#E0E0E0"/>
+                                <TextBlock Text="{Binding SelectedClip.ClipOffsetSeconds, StringFormat='Source offset: {0:F3} s'}"
+                                           FontFamily="Consolas" FontSize="11" Foreground="#8E9299"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="1" Grid.Column="1" Background="#1A1A1C" CornerRadius="6" Padding="12" Margin="6,0">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="GAIN &amp; FADES" FontWeight="Bold" FontSize="10" Foreground="#8E9299"/>
+                                <TextBlock Text="{Binding SelectedClip.GainDb, StringFormat='Gain: {0:F1} dB'}"
+                                           FontFamily="Consolas" FontSize="11" Foreground="#4FC3F7"/>
+                                <Slider Minimum="-24" Maximum="12" Value="{Binding SelectedClip.GainDb}"/>
+                                <TextBlock Text="{Binding SelectedClip.FadeInSeconds, StringFormat='Fade in: {0:F2} s'}"
+                                           FontFamily="Consolas" FontSize="11" Foreground="#8E9299"/>
+                                <Slider Minimum="0" Maximum="4" Value="{Binding SelectedClip.FadeInSeconds}"/>
+                                <TextBlock Text="{Binding SelectedClip.FadeOutSeconds, StringFormat='Fade out: {0:F2} s'}"
+                                           FontFamily="Consolas" FontSize="11" Foreground="#8E9299"/>
+                                <Slider Minimum="0" Maximum="4" Value="{Binding SelectedClip.FadeOutSeconds}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="1" Grid.Column="2" Background="#1A1A1C" CornerRadius="6" Padding="12" Margin="6,0,0,0">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="ACTIONS" FontWeight="Bold" FontSize="10" Foreground="#8E9299"/>
+                                <Button Classes="ToolbarBtn" HorizontalAlignment="Stretch"
+                                        Command="{Binding SplitClipAtPlayheadCommand}">
+                                    <TextBlock Text="✂ Split at Playhead"/>
+                                </Button>
+                                <Button Classes="ToolbarBtn" HorizontalAlignment="Stretch"
+                                        Command="{Binding DuplicateSelectedClipCommand}">
+                                    <TextBlock Text="⧉ Duplicate"/>
+                                </Button>
+                                <Button Classes="ToolbarBtn" HorizontalAlignment="Stretch" Foreground="#FF4444"
+                                        Command="{Binding DeleteSelectedClipCommand}">
+                                    <TextBlock Text="✕ Delete Clip"/>
+                                </Button>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Panel>
+            </TabItem>
+
+            <!-- Tab 3: TagLibSharp Metadata -->
             <TabItem Header="Metadata Inspector (TagLibSharp)">
                 <Grid ColumnDefinitions="*,*" Margin="12">
                     <StackPanel Grid.Column="0" Spacing="6" Margin="0,0,8,0">

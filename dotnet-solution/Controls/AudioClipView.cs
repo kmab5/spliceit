@@ -34,8 +34,13 @@ public sealed class AudioClipView : Control
     private double _rightBound;
     private bool _committed;
 
-    public static readonly StyledProperty<AudioClip?> ClipProperty =
-        AvaloniaProperty.Register<AudioClipView, AudioClip?>(nameof(Clip));
+    /// <summary>
+    /// Named ClipModel rather than Clip: Visual already declares a Clip property
+    /// (the render-clipping Geometry), and shadowing it produces CS0108 plus a
+    /// genuine ambiguity for any XAML that sets Clip.
+    /// </summary>
+    public static readonly StyledProperty<AudioClip?> ClipModelProperty =
+        AvaloniaProperty.Register<AudioClipView, AudioClip?>(nameof(ClipModel));
 
     public static readonly StyledProperty<AudioTrack?> OwnerTrackProperty =
         AvaloniaProperty.Register<AudioClipView, AudioTrack?>(nameof(OwnerTrack));
@@ -52,10 +57,10 @@ public sealed class AudioClipView : Control
     public static readonly StyledProperty<double> GridSizeSecondsProperty =
         AvaloniaProperty.Register<AudioClipView, double>(nameof(GridSizeSeconds), 0.25);
 
-    public AudioClip? Clip
+    public AudioClip? ClipModel
     {
-        get => GetValue(ClipProperty);
-        set => SetValue(ClipProperty, value);
+        get => GetValue(ClipModelProperty);
+        set => SetValue(ClipModelProperty, value);
     }
 
     public AudioTrack? OwnerTrack
@@ -111,7 +116,7 @@ public sealed class AudioClipView : Control
     static AudioClipView()
     {
         AffectsRender<AudioClipView>(
-            ClipProperty, PixelsPerSecondProperty, IsSelectedProperty);
+            ClipModelProperty, PixelsPerSecondProperty, IsSelectedProperty);
     }
 
     public AudioClipView()
@@ -125,7 +130,7 @@ public sealed class AudioClipView : Control
     {
         base.OnPointerPressed(e);
 
-        var clip = Clip;
+        var clip = ClipModel;
         if (clip is null) return;
         if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
 
@@ -151,7 +156,7 @@ public sealed class AudioClipView : Control
     {
         base.OnPointerMoved(e);
 
-        var clip = Clip;
+        var clip = ClipModel;
         if (clip is null) return;
 
         var pos = e.GetPosition(this);
@@ -241,10 +246,10 @@ public sealed class AudioClipView : Control
     {
         base.OnPointerReleased(e);
 
-        if (_mode != DragMode.None && _committed && Clip is not null)
+        if (_mode != DragMode.None && _committed && ClipModel is not null)
         {
             // One undo entry per gesture, not one per pointer move.
-            if (EditCommittedCommand?.CanExecute(Clip) == true) EditCommittedCommand.Execute(Clip);
+            if (EditCommittedCommand?.CanExecute(ClipModel) == true) EditCommittedCommand.Execute(ClipModel);
         }
 
         _mode = DragMode.None;
@@ -267,7 +272,7 @@ public sealed class AudioClipView : Control
     {
         base.Render(context);
 
-        var clip = Clip;
+        var clip = ClipModel;
         if (clip is null) return;
 
         var rect = new Rect(0, 0, Bounds.Width, Bounds.Height);
