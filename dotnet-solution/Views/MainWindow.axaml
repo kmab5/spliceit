@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:SpliceIt.ViewModels"
         xmlns:models="using:SpliceIt.Models"
+        xmlns:controls="using:SpliceIt.Controls"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="1280" d:DesignHeight="800"
@@ -29,6 +30,18 @@
                         <TextBlock Text=".siq" FontSize="10" FontFamily="Consolas" Foreground="#AAAAAA"/>
                     </Border>
                     <TextBox Text="{Binding ProjectName}" Width="160" Background="#202020" BorderBrush="#333333" Foreground="White" Margin="8,0,0,0"/>
+
+                    <!-- Phase 1: these commands finally have file dialogs behind them. -->
+                    <Button Classes="ToolbarBtn" Command="{Binding ImportAudioCommand}"
+                            ToolTip.Tip="Import audio (WAV, MP3, FLAC, OGG, M4A)" Margin="8,0,0,0">
+                        <TextBlock Text="＋ Import"/>
+                    </Button>
+                    <Button Classes="ToolbarBtn" Command="{Binding OpenProjectCommand}" ToolTip.Tip="Open .siq project">
+                        <TextBlock Text="Open"/>
+                    </Button>
+                    <Button Classes="ToolbarBtn" Command="{Binding SaveProjectCommand}" ToolTip.Tip="Save .siq project">
+                        <TextBlock Text="Save"/>
+                    </Button>
                 </StackPanel>
 
                 <!-- Transport Center Controls -->
@@ -55,6 +68,15 @@
                     <Button Classes="ToolbarBtn" Command="{Binding SplitClipAtPlayheadCommand}" ToolTip.Tip="Split Selected Clip at Playhead (S)">
                         <TextBlock Text="✂ Split (S)"/>
                     </Button>
+
+                    <ToggleButton Classes="ChannelToggle" Width="44" IsChecked="{Binding IsLooping}" ToolTip.Tip="Loop playback">
+                        <TextBlock Text="↻"/>
+                    </ToggleButton>
+
+                    <Border Background="#121214" CornerRadius="3" Padding="8,3" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding CurrentPlayheadSeconds, StringFormat='{}{0:F2} s'}"
+                                   FontFamily="Consolas" FontSize="12" Foreground="#00D2FF"/>
+                    </Border>
                 </StackPanel>
 
                 <!-- Export & Save Actions -->
@@ -126,8 +148,25 @@
                                                         Height="86"
                                                         Background="#202A36" BorderBrush="#00D2FF" BorderThickness="1.5" CornerRadius="4"
                                                         ToolTip.Tip="{Binding SourceFilePath}">
-                                                    <TextBlock Text="{Binding Name}" Foreground="White" FontSize="11" Margin="6,4"
-                                                               TextTrimming="CharacterEllipsis"/>
+                                                    <Panel>
+                                                        <!-- Drawn with Avalonia's DrawingContext, honouring
+                                                             ClipOffset/ClipDuration so trims show the right slice. -->
+                                                        <controls:WaveformView
+                                                            Peaks="{Binding Peaks}"
+                                                            ClipOffsetSeconds="{Binding ClipOffsetSeconds}"
+                                                            ClipDurationSeconds="{Binding ClipDurationSeconds}"
+                                                            SourceDurationSeconds="{Binding SourceDurationSeconds}"
+                                                            Opacity="0.8"/>
+
+                                                        <TextBlock Text="{Binding Name}" Foreground="White" FontSize="11"
+                                                                   Margin="6,4" VerticalAlignment="Top"
+                                                                   TextTrimming="CharacterEllipsis"/>
+
+                                                        <TextBlock Text="NO AUDIO" Foreground="#FF4444" FontSize="10"
+                                                                   FontWeight="Bold" Margin="6,0,0,4"
+                                                                   VerticalAlignment="Bottom"
+                                                                   IsVisible="{Binding !HasAudio}"/>
+                                                    </Panel>
                                                 </Border>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -144,8 +183,12 @@
         <Border Grid.Row="2" Background="#161616" BorderBrush="#262626" BorderThickness="0,1" Height="24" Padding="8,0">
             <Grid ColumnDefinitions="*,Auto">
                 <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" FontSize="11" FontFamily="Consolas" Foreground="#00D2FF" VerticalAlignment="Center"/>
-                <ProgressBar Grid.Column="1" Value="{Binding ExportProgress}" Minimum="0" Maximum="100"
-                             Width="160" Height="8" IsVisible="{Binding IsExporting}" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <ProgressBar IsIndeterminate="True" Width="120" Height="8"
+                                 IsVisible="{Binding IsImporting}" VerticalAlignment="Center"/>
+                    <ProgressBar Value="{Binding ExportProgress}" Minimum="0" Maximum="100"
+                                 Width="160" Height="8" IsVisible="{Binding IsExporting}" VerticalAlignment="Center"/>
+                </StackPanel>
             </Grid>
         </Border>
 

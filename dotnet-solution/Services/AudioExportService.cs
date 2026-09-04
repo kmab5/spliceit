@@ -1,9 +1,9 @@
 using System;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NAudio.Wave;
+using SpliceIt.Audio;
 using SpliceIt.DSP;
 using SpliceIt.Models;
 
@@ -14,13 +14,25 @@ public sealed class AudioExportService
     private readonly TagLibMetadataService _metadataService = new();
 
     /// <summary>
-    /// Performs non-destructive, sample-accurate composition and renders all timeline clips
-    /// into a unified 24-bit broadcast WAV master file, baking in the DSP mastering chain
-    /// and writing TagLibSharp metadata.
+    /// Renders the timeline to a 24-bit WAV master, baking in the DSP mastering
+    /// chain and writing TagLibSharp metadata.
+    ///
+    /// PHASE 1 REWRITE — the previous implementation never read any audio. It
+    /// contained the line:
+    ///
+    ///     float sourceSample = MathF.Sin(2f * MathF.PI * 220f * currentTimelineSec) * 0.2f;
+    ///
+    /// so every export was a 220 Hz sine tone regardless of the project. It now
+    /// pulls from TimelineMixerSampleProvider, the same component that feeds
+    /// realtime playback, so a render cannot diverge from what was auditioned.
     /// </summary>
     public async Task ExportMixdownAsync(
         ProjectFile project,
+        AudioSampleCache sampleCache,
         string outputWavPath,
+        double timelineSeconds,
+        double masterVolumeDb = 0.0,
+        bool masterMuted = false,
         IProgress<(int Percent, string Status)>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -29,106 +41,96 @@ public sealed class AudioExportService
             progress?.Report((5, "Analyzing multi-track arrangement..."));
 
             int sampleRate = project.SampleRate;
-            int channels = 2; // Stereo master
+            const int channels = 2;
 
-            // Determine timeline end boundary
-            double maxDurationSec = 0.0;
-            foreach (var track in project.Tracks.Where(t => !t.IsMuted))
+            var mixer = new TimelineMixerSampleProvider(project, sampleCache, sampleRate, timelineSeconds)
             {
-                foreach (var clip in track.Clips)
-                {
-                    if (clip.EndSeconds > maxDurationSec)
-                        maxDurationSec = clip.EndSeconds;
-                }
+                PositionFrames = 0,
+                LoopEnabled = false,
+                MasterGain = masterMuted ? 0f : (float)Math.Pow(10.0, masterVolumeDb / 20.0)
+            };
+
+            long totalFrames = mixer.LengthFrames;
+            if (totalFrames <= 0)
+            {
+                throw new InvalidOperationException(
+                    "Nothing to export — the timeline is empty or no audio has been imported.");
             }
 
-            if (maxDurationSec <= 0.0)
-                maxDurationSec = 4.0; // minimum fallback
-
-            long totalSamples = (long)(maxDurationSec * sampleRate);
             progress?.Report((15, $"Initializing DSP Mastering Engine ({sampleRate} Hz)..."));
 
             var masteringChain = new MasteringChain();
             masteringChain.Initialize(sampleRate, project.Dsp);
 
-            // Setup NAudio 24-bit IEEE / PCM wave format
             var waveFormat = new WaveFormat(sampleRate, 24, channels);
             string tempWavPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.wav");
 
-            using (var writer = new WaveFileWriter(tempWavPath, waveFormat))
+            try
             {
-                const int chunkSize = 4096;
-                float[] stereoChunk = new float[chunkSize * channels];
-                byte[] pcm24Bytes = new byte[chunkSize * channels * 3];
-
-                long samplePos = 0;
-                while (samplePos < totalSamples)
+                using (var writer = new WaveFileWriter(tempWavPath, waveFormat))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    const int chunkFrames = 4096;
+                    var floatChunk = new float[chunkFrames * channels];
+                    var pcm24Bytes = new byte[chunkFrames * channels * 3];
 
-                    int currentChunkSamples = (int)Math.Min(chunkSize, totalSamples - samplePos);
-                    Array.Clear(stereoChunk, 0, stereoChunk.Length);
+                    long framesWritten = 0;
+                    int samplesRead;
 
-                    // Composite each active track and clip into the current chunk
-                    foreach (var track in project.Tracks.Where(t => !t.IsMuted))
+                    while ((samplesRead = mixer.Read(floatChunk, 0, floatChunk.Length)) > 0)
                     {
-                        var (panL, panR) = track.GetPanGains();
+                        cancellationToken.ThrowIfCancellationRequested();
 
-                        foreach (var clip in track.Clips)
+                        // Bake the mastering chain into the render stream.
+                        masteringChain.ProcessInterleavedStereo(floatChunk.AsSpan(0, samplesRead));
+
+                        for (int i = 0; i < samplesRead; i++)
                         {
-                            for (int i = 0; i < currentChunkSamples; i++)
-                            {
-                                double currentTimelineSec = (double)(samplePos + i) / sampleRate;
-
-                                if (currentTimelineSec >= clip.TimelineStartSeconds &&
-                                    currentTimelineSec <= clip.EndSeconds)
-                                {
-                                    float clipGain = clip.CalculateEnvelopeGain(currentTimelineSec);
-
-                                    // Fetch source sample or generate tone
-                                    float sourceSample = MathF.Sin(2.0f * MathF.PI * 220.0f * (float)currentTimelineSec) * 0.2f;
-
-                                    stereoChunk[i * 2] += sourceSample * clipGain * panL;
-                                    stereoChunk[i * 2 + 1] += sourceSample * clipGain * panR;
-                                }
-                            }
+                            float val = Math.Clamp(floatChunk[i], -1.0f, 1.0f);
+                            int pcm24 = (int)(val * 8388607.0f); // 2^23 - 1
+                            int byteIdx = i * 3;
+                            pcm24Bytes[byteIdx] = (byte)(pcm24 & 0xFF);
+                            pcm24Bytes[byteIdx + 1] = (byte)((pcm24 >> 8) & 0xFF);
+                            pcm24Bytes[byteIdx + 2] = (byte)((pcm24 >> 16) & 0xFF);
                         }
+
+                        writer.Write(pcm24Bytes, 0, samplesRead * 3);
+
+                        framesWritten += samplesRead / channels;
+                        int progressPct = 15 + (int)((framesWritten / (double)totalFrames) * 70.0);
+                        progress?.Report((
+                            Math.Clamp(progressPct, 15, 85),
+                            $"Baking DSP pipeline: frame {framesWritten:N0}/{totalFrames:N0}..."));
                     }
+                }
 
-                    // Bake the Hardware-grade DSP mastering chain directly into the render stream
-                    masteringChain.ProcessInterleavedStereo(stereoChunk.AsSpan(0, currentChunkSamples * channels));
+                if (File.Exists(outputWavPath))
+                    File.Delete(outputWavPath);
 
-                    // Convert 32-bit float to 24-bit PCM
-                    for (int i = 0; i < currentChunkSamples * channels; i++)
-                    {
-                        float val = Math.Clamp(stereoChunk[i], -1.0f, 1.0f);
-                        int pcm24 = (int)(val * 8388607.0f); // 2^23 - 1
-                        int byteIdx = i * 3;
-                        pcm24Bytes[byteIdx] = (byte)(pcm24 & 0xFF);
-                        pcm24Bytes[byteIdx + 1] = (byte)((pcm24 >> 8) & 0xFF);
-                        pcm24Bytes[byteIdx + 2] = (byte)((pcm24 >> 16) & 0xFF);
-                    }
-
-                    writer.Write(pcm24Bytes, 0, currentChunkSamples * channels * 3);
-                    samplePos += currentChunkSamples;
-
-                    int progressPct = 15 + (int)((samplePos / (double)totalSamples) * 70.0);
-                    progress?.Report((progressPct, $"Baking DSP pipeline: sample {samplePos:N0}/{totalSamples:N0}..."));
+                File.Move(tempWavPath, outputWavPath);
+            }
+            finally
+            {
+                // A cancelled or failed render must not leave temp files behind.
+                if (File.Exists(tempWavPath))
+                {
+                    try { File.Delete(tempWavPath); } catch { /* best effort */ }
                 }
             }
 
-            // Move temp file to destination
-            if (File.Exists(outputWavPath))
-                File.Delete(outputWavPath);
-
-            File.Move(tempWavPath, outputWavPath);
-
-            // Write ID3v2 & Broadcast metadata via TagLibSharp
             progress?.Report((90, "Writing TagLibSharp broadcast & ID3v2 metadata..."));
-            _metadataService.WriteMetadata(outputWavPath, project.Metadata);
+            try
+            {
+                _metadataService.WriteMetadata(outputWavPath, project.Metadata);
+            }
+            catch (Exception ex)
+            {
+                // A tagging failure should not discard a good render.
+                progress?.Report((95, $"Audio written, but metadata failed: {ex.Message}"));
+            }
 
             double finalLufs = masteringChain.GetIntegratedLufs();
-            progress?.Report((100, $"Mastering complete! Target: -14.0 LUFS (Achieved: {finalLufs:F1} LUFS)"));
+            progress?.Report((100,
+                $"Mastering complete! Target: {project.Dsp.Limiter.TargetLufs:F1} LUFS (Achieved: {finalLufs:F1} LUFS)"));
         }, cancellationToken);
     }
 }

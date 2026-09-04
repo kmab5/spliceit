@@ -67,6 +67,19 @@ public partial class AudioClip : ObservableObject
     [ObservableProperty]
     private string _colorHex = "#00D2FF";
 
+    /// <summary>
+    /// Peak envelope of the decoded source, populated from AudioSampleCache on
+    /// import or project load. Not serialised — it is derived data.
+    /// </summary>
+    [ObservableProperty]
+    [property: JsonIgnore]
+    private float[]? _peaks;
+
+    /// <summary>Whether decoded audio is actually available for this clip.</summary>
+    [ObservableProperty]
+    [property: JsonIgnore]
+    private bool _hasAudio;
+
     [JsonIgnore]
     public double EndSeconds => TimelineStartSeconds + ClipDurationSeconds;
 

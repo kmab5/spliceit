@@ -1,10 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <!--
+      net9.0-windows is required for NAudio's Media Foundation and WASAPI
+      assets. This still cross-compiles from Linux/Codespaces: only WPF and
+      WinForms need a Windows build host, not Avalonia.
+    -->
+    <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SupportedOSPlatformVersion>7.0</SupportedOSPlatformVersion>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <RootNamespace>SpliceIt</RootNamespace>
     <AssemblyName>SpliceIt</AssemblyName>
