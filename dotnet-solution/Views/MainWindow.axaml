@@ -1,0 +1,161 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:SpliceIt.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1280" d:DesignHeight="800"
+        x:Class="SpliceIt.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="{Binding ProjectName, StringFormat='SpliceIt - {0}'}"
+        Background="#1E1E1E"
+        Foreground="#ECECEC"
+        Width="1280" Height="800"
+        WindowStartupLocation="CenterScreen">
+
+    <!-- Design-time DataContext -->
+    <Design.DataContext>
+        <vm:MainViewModel />
+    </Design.DataContext>
+
+    <Grid RowDefinitions="Auto,*,Auto,240">
+        <!-- 1. TOP TRANSPORT BAR -->
+        <Border Grid.Row="0" Background="#161616" BorderBrush="#282828" BorderThickness="0,0,0,1" Height="48" Padding="12,0">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <!-- Project Name & Branding -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <TextBlock Text="SPLICEIT" FontWeight="ExtraBold" FontSize="14" Foreground="#00D2FF" VerticalAlignment="Center"/>
+                    <Border Background="#242424" CornerRadius="3" Padding="6,2">
+                        <TextBlock Text=".siq" FontSize="10" FontFamily="Consolas" Foreground="#AAAAAA"/>
+                    </Border>
+                    <TextBox Text="{Binding ProjectName}" Width="160" Background="#202020" BorderBrush="#333333" Foreground="White" Margin="8,0,0,0"/>
+                </StackPanel>
+
+                <!-- Transport Center Controls -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8" VerticalAlignment="Center">
+                    <Button Classes="ToolbarBtn" Command="{Binding StopCommand}">
+                        <TextBlock Text="■ Stop"/>
+                    </Button>
+                    <Button Classes="ToolbarBtn" Command="{Binding TogglePlayCommand}" Background="#00D2FF" Foreground="#000000" FontWeight="Bold">
+                        <TextBlock Text="{Binding IsPlaying, Converter={x:Null}, StringFormat='▶ Play'}"/>
+                    </Button>
+                    <Button Classes="ToolbarBtn" Command="{Binding SplitClipAtPlayheadCommand}" ToolTip.Tip="Split Selected Clip at Playhead (S)">
+                        <TextBlock Text="✂ Split (S)"/>
+                    </Button>
+                </StackPanel>
+
+                <!-- Export & Save Actions -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <Button Classes="ToolbarBtn" Command="{Binding ExportMixdownCommand}" Background="#00FFA3" Foreground="#000000" FontWeight="Bold">
+                        <TextBlock Text="⚡ Export Mixdown (.WAV)"/>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 2. MULTI-TRACK ARRANGEMENT TIMELINE -->
+        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Tracks}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <!-- Track Lane -->
+                        <Border Height="96" Background="#1A1A1A" BorderBrush="#252525" BorderThickness="0,0,0,1">
+                            <Grid ColumnDefinitions="220,*">
+                                <!-- Track Control Header -->
+                                <Border Grid.Column="0" Background="#181818" BorderBrush="#252525" BorderThickness="0,0,1,0" Padding="10">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="12" Foreground="White"/>
+                                        <Grid ColumnDefinitions="*,*">
+                                            <Button Grid.Column="0" Content="Mute" Classes="ToolbarBtn" Margin="0,0,2,0"/>
+                                            <Button Grid.Column="1" Content="Solo" Classes="ToolbarBtn" Margin="2,0,0,0"/>
+                                        </Grid>
+                                        <Slider Minimum="-36" Maximum="6" Value="{Binding VolumeDb}" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Clip Canvas -->
+                                <Canvas Grid.Column="1" Background="#141414">
+                                    <ItemsControl ItemsSource="{Binding Clips}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <Canvas />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <!-- Audio Clip Graphic -->
+                                                <Border Canvas.Left="10" Canvas.Top="4" Width="320" Height="86"
+                                                        Background="#202A36" BorderBrush="#00D2FF" BorderThickness="1.5" CornerRadius="4">
+                                                    <TextBlock Text="{Binding Name}" Foreground="White" FontSize="11" Margin="6,4"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Canvas>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <!-- 3. STATUS / TIMELINE RULER DIVIDER -->
+        <Border Grid.Row="2" Background="#161616" BorderBrush="#262626" BorderThickness="0,1" Height="24" Padding="8,0">
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" FontSize="11" FontFamily="Consolas" Foreground="#00D2FF" VerticalAlignment="Center"/>
+                <ProgressBar Grid.Column="1" Value="{Binding ExportProgress}" Width="160" Height="8" IsVisible="{Binding IsExporting}" VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- 4. BOTTOM DOCK (MASTERING DSP & METADATA INSPECTOR) -->
+        <TabControl Grid.Row="3" Background="#141414" TabStripPlacement="Top">
+            <!-- Tab 1: DSP Mastering Chain -->
+            <TabItem Header="Mastering DSP Chain">
+                <Grid ColumnDefinitions="*,*,*" Margin="12">
+                    <Border Grid.Column="0" Background="#1A1A1A" CornerRadius="6" Padding="12" Margin="0,0,6,0">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="HARSH CUT (>12 kHz)" FontWeight="Bold" Foreground="#00D2FF"/>
+                            <TextBlock Text="Cuts brittle high frequencies with high-shelf curve." FontSize="11" Foreground="#888888"/>
+                            <Slider Minimum="-12" Maximum="0" Value="{Binding DspSettings.HighCutBand.GainDb}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Grid.Column="1" Background="#1A1A1A" CornerRadius="6" Padding="12" Margin="6,0">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="MUD SCOOP (200 - 400 Hz)" FontWeight="Bold" Foreground="#FFAA00"/>
+                            <TextBlock Text="Removes boxy, muddy low-mid build-up." FontSize="11" Foreground="#888888"/>
+                            <Slider Minimum="-12" Maximum="3" Value="{Binding DspSettings.MudScoopBand.GainDb}"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Grid.Column="2" Background="#1A1A1A" CornerRadius="6" Padding="12" Margin="6,0,0,0">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="TRUE-PEAK LIMITER &amp; -14 LUFS" FontWeight="Bold" Foreground="#00FFA3"/>
+                            <TextBlock Text="Inter-sample peak limiter targeting streaming standards." FontSize="11" Foreground="#888888"/>
+                            <Slider Minimum="-3" Maximum="-0.1" Value="{Binding DspSettings.Limiter.CeilingDb}"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- Tab 2: TagLibSharp Metadata -->
+            <TabItem Header="Metadata Inspector (TagLibSharp)">
+                <Grid ColumnDefinitions="*,*" Margin="12">
+                    <StackPanel Grid.Column="0" Spacing="6" Margin="0,0,8,0">
+                        <TextBlock Text="Title:" FontSize="11" Foreground="#AAAAAA"/>
+                        <TextBox Text="{Binding Metadata.Title}" Background="#202020"/>
+                        <TextBlock Text="Artist:" FontSize="11" Foreground="#AAAAAA"/>
+                        <TextBox Text="{Binding Metadata.Artist}" Background="#202020"/>
+                        <TextBlock Text="Album:" FontSize="11" Foreground="#AAAAAA"/>
+                        <TextBox Text="{Binding Metadata.Album}" Background="#202020"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="6" Margin="8,0,0,0">
+                        <TextBlock Text="ISRC Code:" FontSize="11" Foreground="#AAAAAA"/>
+                        <TextBox Text="{Binding Metadata.Isrc}" Background="#202020"/>
+                        <TextBlock Text="BPM:" FontSize="11" Foreground="#AAAAAA"/>
+                        <TextBox Text="{Binding Metadata.Bpm}" Background="#202020"/>
+                        <TextBlock Text="Copyright:" FontSize="11" Foreground="#AAAAAA"/>
+                        <TextBox Text="{Binding Metadata.Copyright}" Background="#202020"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

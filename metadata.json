@@ -1,0 +1,6 @@
+{
+  "name": "SpliceIt",
+  "description": "A modern cross-platform audio workspace and mastering studio featuring multi-track timeline, non-destructive editing, DSP mastering chain, and TagLibSharp metadata editor.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
