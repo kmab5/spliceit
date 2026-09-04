@@ -5,9 +5,21 @@
              RequestedThemeVariant="Dark">
 
     <Application.Resources>
-        <!-- Fixed-zoom seconds -> pixels mapping used by the clip canvas. -->
-        <conv:SecondsToPixelsConverter x:Key="SecondsToPixels" DefaultPixelsPerSecond="80" />
-        <conv:SecondsToPixelsConverter x:Key="SecondsToWidth" DefaultPixelsPerSecond="80" MinimumPixels="8" />
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceInclude Source="avares://SpliceIt/Styles/DesignTokens.axaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Phase 0's fixed-scale converter, kept for anything not yet zoom-aware. -->
+            <conv:SecondsToPixelsConverter x:Key="SecondsToPixels" DefaultPixelsPerSecond="80" />
+            <conv:SecondsToPixelsConverter x:Key="SecondsToWidth" DefaultPixelsPerSecond="80" MinimumPixels="8" />
+
+            <!-- Zoom-aware replacements used by the timeline. -->
+            <conv:SecondsAndZoomToPixelsConverter x:Key="SecondsAndZoomToPixels" />
+            <conv:SecondsAndZoomToPixelsConverter x:Key="SecondsAndZoomToWidth" Minimum="8" />
+            <conv:ScrollOffsetToTransformConverter x:Key="ScrollOffsetToTransform" />
+            <conv:HexToBrushConverter x:Key="HexToBrush" />
+        </ResourceDictionary>
     </Application.Resources>
 
     <Application.Styles>

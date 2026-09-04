@@ -1,0 +1,51 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+        Single source of truth for the SpliceIt palette, ported from the React
+        app's Tailwind classes so both front-ends stay visually identical.
+        Colours were previously hardcoded across MainWindow.axaml in a dozen
+        places, which made them impossible to change consistently.
+    -->
+
+    <!-- Surfaces, darkest to lightest -->
+    <Color x:Key="SurfaceDeepColor">#0F0F10</Color>
+    <Color x:Key="SurfaceBaseColor">#121214</Color>
+    <Color x:Key="SurfacePanelColor">#161618</Color>
+    <Color x:Key="SurfaceRaisedColor">#1A1A1C</Color>
+    <Color x:Key="SurfaceHoverColor">#252528</Color>
+    <Color x:Key="BorderColor">#2D2D2F</Color>
+    <Color x:Key="BorderStrongColor">#4F4F51</Color>
+
+    <!-- Text -->
+    <Color x:Key="TextPrimaryColor">#E0E0E0</Color>
+    <Color x:Key="TextMutedColor">#8E9299</Color>
+
+    <!-- Accents -->
+    <Color x:Key="AccentCyanColor">#4FC3F7</Color>
+    <Color x:Key="AccentCyanDeepColor">#29B6F6</Color>
+    <Color x:Key="AccentAmberColor">#F27D26</Color>
+    <Color x:Key="AccentGreenColor">#00FFA3</Color>
+    <Color x:Key="AccentRedColor">#FF4444</Color>
+    <Color x:Key="AccentPurpleColor">#BD00FF</Color>
+
+    <SolidColorBrush x:Key="SurfaceDeepBrush" Color="{StaticResource SurfaceDeepColor}"/>
+    <SolidColorBrush x:Key="SurfaceBaseBrush" Color="{StaticResource SurfaceBaseColor}"/>
+    <SolidColorBrush x:Key="SurfacePanelBrush" Color="{StaticResource SurfacePanelColor}"/>
+    <SolidColorBrush x:Key="SurfaceRaisedBrush" Color="{StaticResource SurfaceRaisedColor}"/>
+    <SolidColorBrush x:Key="SurfaceHoverBrush" Color="{StaticResource SurfaceHoverColor}"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="BorderStrongBrush" Color="{StaticResource BorderStrongColor}"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="{StaticResource TextPrimaryColor}"/>
+    <SolidColorBrush x:Key="TextMutedBrush" Color="{StaticResource TextMutedColor}"/>
+    <SolidColorBrush x:Key="AccentCyanBrush" Color="{StaticResource AccentCyanColor}"/>
+    <SolidColorBrush x:Key="AccentCyanDeepBrush" Color="{StaticResource AccentCyanDeepColor}"/>
+    <SolidColorBrush x:Key="AccentAmberBrush" Color="{StaticResource AccentAmberColor}"/>
+    <SolidColorBrush x:Key="AccentGreenBrush" Color="{StaticResource AccentGreenColor}"/>
+    <SolidColorBrush x:Key="AccentRedBrush" Color="{StaticResource AccentRedColor}"/>
+    <SolidColorBrush x:Key="AccentPurpleBrush" Color="{StaticResource AccentPurpleColor}"/>
+
+    <!-- Layout constants shared by the ruler, lanes and header column -->
+    <x:Double x:Key="TrackLaneHeight">96</x:Double>
+    <x:Double x:Key="TrackHeaderWidth">220</x:Double>
+    <x:Double x:Key="RulerHeight">28</x:Double>
+</ResourceDictionary>

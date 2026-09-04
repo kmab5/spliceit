@@ -9,6 +9,7 @@ using CommunityToolkit.Mvvm.Input;
 using SpliceIt.Audio;
 using SpliceIt.Models;
 using SpliceIt.Services;
+using SpliceIt.Utils;
 
 namespace SpliceIt.ViewModels;
 
@@ -43,6 +44,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private bool _isSnapToGrid = true;
+
+    [ObservableProperty]
+    private double _gridSizeSeconds = 0.25;
+
+    /// <summary>Pixel width of the whole timeline; drives scroll extents.</summary>
+    [ObservableProperty]
+    private double _timelineWidthPixels = 16.0 * 80.0;
+
+    /// <summary>
+    /// Playhead X in pixels. Computed here rather than via a MultiBinding
+    /// converter because Canvas.Left needs a plain double.
+    /// </summary>
+    [ObservableProperty]
+    private double _playheadPixels;
 
     [ObservableProperty]
     private double _loopStartSeconds = 0.0;
@@ -189,6 +204,180 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnIsLoopingChanged(bool value) =>
         _playbackEngine.SetLoop(value, LoopStartSeconds, LoopEndSeconds);
+
+    partial void OnLoopStartSecondsChanged(double value) =>
+        _playbackEngine.SetLoop(IsLooping, value, LoopEndSeconds);
+
+    partial void OnLoopEndSecondsChanged(double value) =>
+        _playbackEngine.SetLoop(IsLooping, LoopStartSeconds, value);
+
+    partial void OnZoomFactorChanged(double value) => RecalculateTimelineWidth();
+
+    partial void OnTimelineDurationSecondsChanged(double value) => RecalculateTimelineWidth();
+
+    private void RecalculateTimelineWidth()
+    {
+        TimelineWidthPixels = Math.Max(800.0, TimelineDurationSeconds * ZoomFactor);
+        RecalculatePlayheadPixels();
+    }
+
+    private void RecalculatePlayheadPixels() =>
+        PlayheadPixels = CurrentPlayheadSeconds * ZoomFactor;
+
+    partial void OnCurrentPlayheadSecondsChanged(double value) => RecalculatePlayheadPixels();
+
+    // ------------------------------------------------------------------- Zoom
+
+    [RelayCommand]
+    private void ZoomIn() => ZoomFactor = Math.Min(250, ZoomFactor + 15);
+
+    [RelayCommand]
+    private void ZoomOut() => ZoomFactor = Math.Max(15, ZoomFactor - 15);
+
+    /// <summary>Ctrl+wheel zoom, matching the React arrangement view.</summary>
+    public void ZoomByDelta(double wheelDelta)
+    {
+        double factor = wheelDelta > 0 ? 1.15 : 0.85;
+        ZoomFactor = Math.Clamp(Math.Round(ZoomFactor * factor), 15, 250);
+    }
+
+    // -------------------------------------------------------------- Navigation
+
+    [RelayCommand]
+    private void GoToStart() => Scrub(0);
+
+    [RelayCommand]
+    private void GoToEnd() => Scrub(TimelineDurationSeconds);
+
+    /// <summary>Moves the playhead, keeping a live transport in sync.</summary>
+    public void Scrub(double seconds)
+    {
+        double clamped = Math.Clamp(seconds, 0, Math.Max(0, TimelineDurationSeconds));
+        CurrentPlayheadSeconds = clamped;
+        if (IsPlaying) _playbackEngine.Seek(clamped);
+    }
+
+    // ------------------------------------------------------------ Track edits
+
+    [RelayCommand]
+    private void AddTrack()
+    {
+        string[] palette = { "#00D2FF", "#BD00FF", "#FFAA00", "#00FFA3", "#FF0055" };
+        Tracks.Add(new AudioTrack
+        {
+            Name = $"Audio Track {Tracks.Count + 1}",
+            ColorHex = palette[Tracks.Count % palette.Length]
+        });
+    }
+
+    [RelayCommand]
+    private void DeleteTrack(AudioTrack? track)
+    {
+        if (track is null) return;
+        if (SelectedClip is not null && track.Clips.Contains(SelectedClip)) SelectedClip = null;
+        Tracks.Remove(track);
+        ReindexTracks();
+    }
+
+    [RelayCommand]
+    private void MoveTrackUp(AudioTrack? track)
+    {
+        if (track is null) return;
+        int i = Tracks.IndexOf(track);
+        if (i <= 0) return;
+        Tracks.Move(i, i - 1);
+        ReindexTracks();
+    }
+
+    [RelayCommand]
+    private void MoveTrackDown(AudioTrack? track)
+    {
+        if (track is null) return;
+        int i = Tracks.IndexOf(track);
+        if (i < 0 || i >= Tracks.Count - 1) return;
+        Tracks.Move(i, i + 1);
+        ReindexTracks();
+    }
+
+    [RelayCommand]
+    private void DeleteSelectedClip()
+    {
+        if (SelectedClip is null) return;
+        var owner = Tracks.FirstOrDefault(t => t.Clips.Contains(SelectedClip));
+        owner?.Clips.Remove(SelectedClip);
+        SelectedClip = null;
+        StatusMessage = "Clip deleted";
+    }
+
+    [RelayCommand]
+    private void DuplicateSelectedClip()
+    {
+        if (SelectedClip is null) return;
+        var owner = Tracks.FirstOrDefault(t => t.Clips.Contains(SelectedClip));
+        if (owner is null) return;
+
+        var source = SelectedClip;
+        double slot = ClipCollision.FindNextAvailableSlot(
+            source.TimelineStartSeconds + source.ClipDurationSeconds,
+            source.ClipDurationSeconds,
+            owner.Clips);
+
+        var copy = new AudioClip
+        {
+            Name = $"{source.Name} (Copy)",
+            SourceFilePath = source.SourceFilePath,
+            TimelineStartSeconds = slot,
+            ClipOffsetSeconds = source.ClipOffsetSeconds,
+            ClipDurationSeconds = source.ClipDurationSeconds,
+            SourceDurationSeconds = source.SourceDurationSeconds,
+            GainDb = source.GainDb,
+            FadeInSeconds = source.FadeInSeconds,
+            FadeOutSeconds = source.FadeOutSeconds,
+            CrossfadeType = source.CrossfadeType,
+            ColorHex = source.ColorHex,
+            Peaks = source.Peaks,
+            HasAudio = source.HasAudio
+        };
+
+        owner.Clips.Add(copy);
+        SelectedClip = copy;
+
+        if (copy.EndSeconds + 4 > TimelineDurationSeconds)
+            TimelineDurationSeconds = Math.Ceiling(copy.EndSeconds + 4);
+    }
+
+    [RelayCommand]
+    private void SelectClip(AudioClip? clip)
+    {
+        if (clip is not null) SelectedClip = clip;
+    }
+
+    [RelayCommand]
+    private void ScrubTo(double seconds) => Scrub(seconds);
+
+    [RelayCommand]
+    private void CommitClipEdit(AudioClip? clip)
+    {
+        if (clip is not null) OnClipEdited(clip);
+    }
+
+    /// <summary>Called after a clip drag/trim so the timeline can grow to fit.</summary>
+    public void OnClipEdited(AudioClip clip)
+    {
+        if (clip.EndSeconds + 4 > TimelineDurationSeconds)
+            TimelineDurationSeconds = Math.Ceiling(clip.EndSeconds + 4);
+
+        StatusMessage =
+            $"{clip.Name}: start {clip.TimelineStartSeconds:F2}s, length {clip.ClipDurationSeconds:F2}s";
+    }
+
+    private void ReindexTracks()
+    {
+        for (int i = 0; i < Tracks.Count; i++)
+        {
+            foreach (var c in Tracks[i].Clips) c.TrackIndex = i;
+        }
+    }
 
     // ------------------------------------------------------------------- Import
 

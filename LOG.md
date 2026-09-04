@@ -2,6 +2,89 @@
 
 ---
 
+# Turn 6 — Avalonia/C# Phase 2a: the timeline becomes usable
+
+**Goal:** turn the static clip rectangles into a real arrangement view — zoom, scrub, drag, trim — with a design-token system underneath so Phase 2b isn't fighting hardcoded colours.
+
+> ### ⚠️ Not compile-verified
+> Same constraint as before. Validated: XML well-formedness of all `.axaml`, brace/paren/bracket balance across all 29 `.cs` files.
+>
+> **Phase 1 is still unconfirmed** — the last build error I saw was `CS0103`. If Turn 5 didn't clear it, fix that first; this turn sits on top of it.
+
+**Scope:** 6 files added, 5 modified.
+
+---
+
+## New
+
+### `Styles/DesignTokens.axaml`
+Every colour from the React app's Tailwind classes, as `Color` + `SolidColorBrush` resources, merged into `App.axaml`. Colours were previously hardcoded in a dozen places across `MainWindow.axaml`, which made consistent change impossible.
+
+### `Utils/ClipCollision.cs`
+Direct port of `clipCollision.ts` — `Overlaps`, `GetMovementBounds`, `FindNextAvailableSlot`, `Snap`. Same 1 ms epsilon so clips can abut exactly without registering as overlapping. Drag, trim, duplicate and paste now behave identically in both front-ends because they share the algorithm.
+
+### `Controls/AudioClipView.cs`
+The interactive clip. Draws its own waveform, label, fade ramps, selection ring and trim handles, and owns its pointer handling:
+
+- **Move** — drag the body; clamped between neighbours via `GetMovementBounds`
+- **Trim start** — left 8 px; adjusts `TimelineStart`, `ClipOffset` and `ClipDuration` together, and refuses to read before the source's beginning
+- **Trim end** — right 8 px; clamped by both the next clip *and* the end of the decoded source
+- Cursor changes on hover over a handle
+- `EditCommittedCommand` fires once on pointer-release, not per pointer-move — the Phase 3 undo stack needs one entry per gesture
+
+Drawn rather than templated so hit-testing zones are unambiguous.
+
+### `Controls/TimelineLanePanel.cs`
+Positions clips by `TimelineStartSeconds × PixelsPerSecond`. A plain `Canvas` couldn't do this — `Canvas.Left` would need a per-child MultiBinding against live zoom. Keeping the maths in the panel makes a zoom change one `InvalidateArrange`.
+
+### `Controls/TimelineRuler.cs`
+Adaptive tick density (0.5 s / 1 s / 2 s / 5 s by zoom level), minute:second labels, loop-region overlay, playhead marker, and click-drag scrubbing.
+
+### `Controls/WaveformRenderer.cs`
+Shared peak-drawing extracted from `WaveformView`, so the clip view and any future thumbnail draw identically.
+
+### `Converters/TimelineConverters.cs`
+`SecondsAndZoomToPixelsConverter` (replaces Phase 0's fixed-scale converter, which couldn't respond to zoom at all), `ScrollOffsetToTransformConverter`, `HexToBrushConverter`.
+
+---
+
+## Modified
+
+**`Views/MainWindow.axaml`** — the arrangement region rebuilt as a 2×2 grid: ruler gutter, ruler, track headers, lanes.
+
+The scroll synchronisation is worth explaining. Rather than nesting `ScrollViewer`s and syncing offsets — which reliably ends in a feedback loop — there is **one** scroller (the lanes). The ruler and the header column are translated by its offset through `ScrollOffsetToTransformConverter`, on X and Y respectively. One source of truth, no fighting.
+
+Track headers gained inline rename, move up/down, delete, and pan alongside volume.
+
+**`ViewModels/MainViewModel.cs`** — zoom in/out plus `ZoomByDelta` for Ctrl+wheel, `Scrub`/`ScrubTo` that seeks a live transport, `AddTrack`/`DeleteTrack`/`MoveTrackUp`/`MoveTrackDown` with reindexing, `DuplicateSelectedClip` using `FindNextAvailableSlot`, `DeleteSelectedClip`, and computed `TimelineWidthPixels` / `PlayheadPixels`.
+
+**Controls use bindable `ICommand` properties rather than CLR events** — `SelectCommand`, `EditCommittedCommand`, `ScrubCommand`. Events would have needed per-instance code-behind wiring for controls created inside a `DataTemplate`; commands bind directly.
+
+---
+
+## Known gaps in this slice
+
+- **Playhead height is a hardcoded 4000 px** rectangle rather than bound to content height. Works, inelegant.
+- **Ctrl+wheel zoom** — `ZoomByDelta` exists but nothing calls it yet; needs a `PointerWheelChanged` handler on the lane scroller.
+- **Playhead isn't draggable** in the lane area (the ruler scrubs fine).
+- **No clip context menu** yet.
+- Fixed 220 px header column — the React version is drag-resizable.
+
+## Risk in this turn
+
+`{Binding $parent[Window].((vm:MainViewModel)DataContext).SomeCommand}` is used throughout the lane templates to reach view-model commands from inside nested `DataTemplate`s. The syntax is correct for Avalonia 11 compiled bindings, but it's verbose and I can't verify it here — if anything in the timeline fails to bind, this is the first thing to check.
+
+---
+
+## Next — Phase 2b
+
+Bottom dock tabs (DSP / metadata / clip inspector / media pool), the export dialog with format selection, clip context menus, draggable playhead, Ctrl+wheel zoom wiring, and a resizable header column.
+
+Then **Phase 3** (undo/redo, clipboard, FFmpeg multi-format encode, metadata + cue chunks, and mirroring Turn 1's multiband and mid/side fixes into `MasteringChain.cs`) and **Phase 4** (Concat mode behind a top-bar mode switcher).
+
+---
+---
+
 # Turn 5 — Build fix: `CS0103 MediaFoundationApi`
 
 ```
