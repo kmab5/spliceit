@@ -18,9 +18,11 @@ import {
   AudioMetadataTags,
   MasterSection,
   ExportFormat,
-  ExportSettings
+  ExportSettings,
+  MasterBusState
 } from '../types';
 import { renderTimelineMixdown, ExportResult } from '../audio/mixdownExporter';
+import { generateUniqueId } from '../utils/idGenerator';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -32,6 +34,8 @@ interface ExportModalProps {
   onUpdateMetadata: (updated: Partial<AudioMetadataTags>) => void;
   masterSections: MasterSection[];
   onUpdateSections: (sections: MasterSection[]) => void;
+  /** Master fader + mute, so the rendered file matches what was auditioned. */
+  masterBus?: MasterBusState;
 }
 
 type ModalTab = 'format' | 'metadata' | 'sections';
@@ -45,7 +49,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   metadata,
   onUpdateMetadata,
   masterSections,
-  onUpdateSections
+  onUpdateSections,
+  masterBus = { volumeDb: 0, isMuted: false }
 }) => {
   const [activeTab, setActiveTab] = useState<ModalTab>('format');
   const [isRendering, setIsRendering] = useState(false);
@@ -87,7 +92,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         (pct, status) => {
           setProgress(pct);
           setStatusText(status);
-        }
+        },
+        masterBus
       );
       setExportResult(result);
     } catch (err) {
@@ -126,7 +132,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     const lastSec = masterSections[masterSections.length - 1];
     const startTime = lastSec ? lastSec.endTime : 0;
     const newSec: MasterSection = {
-      id: `sec-${Date.now()}`,
+      id: generateUniqueId('sec'),
       name: `Section ${masterSections.length + 1}`,
       startTime: Math.round(startTime * 10) / 10,
       endTime: Math.round((startTime + 4) * 10) / 10,
@@ -335,8 +341,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       setExportResult(null);
                     }}
                     className="accent-[#4FC3F7] rounded"
-                  >
-                  </input>
+                  />
                   <span className="text-white font-medium">
                     Embed TagLibSharp Metadata (Title, Artist, Album, ISRC, Year)
                   </span>
@@ -351,8 +356,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       setExportResult(null);
                     }}
                     className="accent-[#4FC3F7] rounded"
-                  >
-                  </input>
+                  />
                   <span className="text-white font-medium">
                     Bake Master Bus Sections into RIFF cue/labl chunk &amp; Generate .CUE Sheet
                   </span>

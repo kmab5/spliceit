@@ -1,6 +1,7 @@
 import React, { useRef, useMemo, useState } from 'react';
 import { Volume2, VolumeX, Radio, Plus, X, Check, Edit2 } from 'lucide-react';
 import { AudioTrackModel, MasterSection } from '../types';
+import { generateUniqueId } from '../utils/idGenerator';
 
 interface MasterTimetrackProps {
   tracks: AudioTrackModel[];
@@ -16,6 +17,8 @@ interface MasterTimetrackProps {
   isHeaderVisible: boolean;
   masterSections: MasterSection[];
   onUpdateSections: (sections: MasterSection[]) => void;
+  /** Records an undo step; used for add/delete/rename and on drag mouse-up. */
+  onCommitSections?: (sections: MasterSection[]) => void;
   snapToGrid?: boolean;
   gridSnapSize?: number;
 }
@@ -34,15 +37,22 @@ export const MasterTimetrack: React.FC<MasterTimetrackProps> = ({
   isHeaderVisible,
   masterSections,
   onUpdateSections,
+  onCommitSections,
   snapToGrid = true,
   gridSnapSize = 0.25
 }) => {
   const laneRef = useRef<HTMLDivElement>(null);
+  const latestSectionsRef = useRef<MasterSection[] | null>(null);
   const [editingSectionId, setEditingSectionId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string>('');
   const snapStep = gridSnapSize > 0 ? gridSnapSize : 0.25;
 
-  const widthPx = Math.max(1200, totalDuration * zoom);
+  // Width parity with ArrangementView / TimelineRuler.
+  const widthPx = Math.max(800, totalDuration * zoom);
+
+  /** Structural section changes should land in the undo stack. */
+  const commitSections = (sections: MasterSection[]) =>
+    (onCommitSections ?? onUpdateSections)(sections);
 
   // Compute composite master peaks by summing all active track clips
   const compositePeaks = useMemo(() => {
@@ -110,19 +120,19 @@ export const MasterTimetrack: React.FC<MasterTimetrackProps> = ({
     const end = Math.min(totalDuration, start + 4.0);
 
     const newSec: MasterSection = {
-      id: `sec-${Date.now()}`,
+      id: generateUniqueId('sec'),
       name: `Section ${masterSections.length + 1}`,
       startTime: Math.round(start * 10) / 10,
       endTime: Math.round(end * 10) / 10,
       color: colors[masterSections.length % colors.length]
     };
-    onUpdateSections([...masterSections, newSec]);
+    commitSections([...masterSections, newSec]);
   };
 
   // Delete section
   const handleDeleteSection = (secId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    onUpdateSections(masterSections.filter((s) => s.id !== secId));
+    commitSections(masterSections.filter((s) => s.id !== secId));
   };
 
   // Start rename
@@ -138,7 +148,7 @@ export const MasterTimetrack: React.FC<MasterTimetrackProps> = ({
       setEditingSectionId(null);
       return;
     }
-    onUpdateSections(
+    commitSections(
       masterSections.map((s) => (s.id === secId ? { ...s, name: editingName.trim() } : s))
     );
     setEditingSectionId(null);
@@ -178,18 +188,23 @@ export const MasterTimetrack: React.FC<MasterTimetrackProps> = ({
         updatedEnd = Math.min(totalDuration, Math.max(initialStart + 0.5, initialEnd + timeDelta));
       }
 
-      onUpdateSections(
-        masterSections.map((s) =>
-          s.id === sec.id
-            ? { ...s, startTime: Math.round(updatedStart * 100) / 100, endTime: Math.round(updatedEnd * 100) / 100 }
-            : s
-        )
+      const nextSections = masterSections.map((s) =>
+        s.id === sec.id
+          ? { ...s, startTime: Math.round(updatedStart * 100) / 100, endTime: Math.round(updatedEnd * 100) / 100 }
+          : s
       );
+      latestSectionsRef.current = nextSections;
+      onUpdateSections(nextSections);
     };
 
     const onMouseUp = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      // One undo entry for the whole gesture rather than one per mousemove.
+      if (latestSectionsRef.current) {
+        commitSections(latestSectionsRef.current);
+        latestSectionsRef.current = null;
+      }
     };
 
     window.addEventListener('mousemove', onMouseMove);

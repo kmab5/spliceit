@@ -1,12 +1,13 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Plus, UploadCloud, ChevronLeft, ChevronRight, Play } from 'lucide-react';
-import { AudioTrackModel, AudioClipModel, MasterSection } from '../types';
+import { Plus, UploadCloud, ChevronLeft, ChevronRight } from 'lucide-react';
+import { AudioTrackModel, AudioClipModel, MasterSection, LoopRegion } from '../types';
 import { TrackHeader } from './TrackHeader';
 import { TimelineRuler } from './TimelineRuler';
 import { AudioClipItem } from './AudioClipItem';
 import { MasterTimetrack } from './MasterTimetrack';
 import { TimelineContextMenu, ContextMenuState } from './TimelineContextMenu';
 import { findNextAvailableSlot } from '../utils/clipCollision';
+import { generateUniqueId } from '../utils/idGenerator';
 
 interface ArrangementViewProps {
   tracks: AudioTrackModel[];
@@ -19,6 +20,8 @@ interface ArrangementViewProps {
   selectedClipId: string | null;
   onSelectClip: (clip: AudioClipModel) => void;
   onUpdateClip: (trackIndex: number, clipId: string, updated: Partial<AudioClipModel>) => void;
+  /** Fired once on mouse-up after a drag/trim so the gesture becomes one undo step. */
+  onCommitClipEdit?: () => void;
   onAddClipToTrack?: (trackIndex: number, clip: AudioClipModel) => void;
   onDeleteClip?: (trackIndex: number, clipId: string) => void;
   onSplitClipAtPlayhead?: () => void;
@@ -28,6 +31,8 @@ interface ArrangementViewProps {
   onZoomChange?: (newZoom: number) => void;
   onScrubTime: (time: number) => void;
   isLooping: boolean;
+  loopRegion?: LoopRegion;
+  onUpdateLoopRegion?: (region: LoopRegion) => void;
   snapToGrid: boolean;
   gridSnapSize: number;
   onImportAudioFile: (file: File) => void;
@@ -40,7 +45,10 @@ interface ArrangementViewProps {
   isMasterMuted: boolean;
   onToggleMasterMute: () => void;
   masterSections: MasterSection[];
+  /** Live/transient section updates during a drag — not recorded in history. */
   onUpdateSections: (sections: MasterSection[]) => void;
+  /** Section change that should become an undo step. */
+  onCommitSections?: (sections: MasterSection[]) => void;
   onOpenMediaPool?: () => void;
   onInsertClipToTrack?: (fileId: string, trackIndex: number, startTime?: number) => void;
 }
@@ -56,6 +64,7 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
   selectedClipId,
   onSelectClip,
   onUpdateClip,
+  onCommitClipEdit,
   onAddClipToTrack,
   onDeleteClip,
   onSplitClipAtPlayhead,
@@ -65,6 +74,8 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
   onZoomChange,
   onScrubTime,
   isLooping,
+  loopRegion = { startTime: 0, endTime: 8 },
+  onUpdateLoopRegion,
   snapToGrid,
   gridSnapSize,
   onImportAudioFile,
@@ -78,6 +89,7 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
   onToggleMasterMute,
   masterSections,
   onUpdateSections,
+  onCommitSections,
   onOpenMediaPool,
   onInsertClipToTrack
 }) => {
@@ -314,11 +326,11 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
     if (!copiedTrack) return;
     const newTrack: AudioTrackModel = {
       ...copiedTrack,
-      id: `trk-copy-${Date.now()}`,
+      id: generateUniqueId('trk'),
       name: `${copiedTrack.name} (Copy)`,
       clips: copiedTrack.clips.map((c) => ({
         ...c,
-        id: `clip-copy-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`
+        id: generateUniqueId('clip')
       }))
     };
     if (onInsertTrack) {
@@ -333,11 +345,11 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
     if (!source) return;
     const newTrack: AudioTrackModel = {
       ...source,
-      id: `trk-dup-${Date.now()}`,
+      id: generateUniqueId('trk'),
       name: `${source.name} (Copy)`,
       clips: source.clips.map((c) => ({
         ...c,
-        id: `clip-dup-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`
+        id: generateUniqueId('clip')
       }))
     };
     if (onInsertTrack) {
@@ -364,7 +376,7 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
     const slot = findNextAvailableSlot(time, dur, targetTrack.clips);
     const newClip: AudioClipModel = {
       ...copiedClip,
-      id: `clip-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      id: generateUniqueId('clip'),
       trackIndex,
       timelineStart: slot
     };
@@ -381,7 +393,7 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
     );
     const newClip: AudioClipModel = {
       ...clip,
-      id: `clip-dup-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      id: generateUniqueId('clip'),
       timelineStart: slot
     };
     onAddClipToTrack?.(trackIndex, newClip);
@@ -607,6 +619,9 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
             zoom={zoom}
             onScrubTime={onScrubTime}
             isLooping={isLooping}
+            loopStart={loopRegion.startTime}
+            loopEnd={loopRegion.endTime}
+            onUpdateLoopRegion={onUpdateLoopRegion}
           />
 
           {/* Master Timetrack Overview with Sections */}
@@ -624,6 +639,7 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
             isHeaderVisible={false}
             masterSections={masterSections}
             onUpdateSections={onUpdateSections}
+            onCommitSections={onCommitSections}
             snapToGrid={snapToGrid}
             gridSnapSize={gridSnapSize}
           />
@@ -692,6 +708,7 @@ export const ArrangementView: React.FC<ArrangementViewProps> = ({
                   isSelected={clip.id === selectedClipId}
                   onSelect={() => onSelectClip(clip)}
                   onUpdateClip={(updated) => onUpdateClip(trackIdx, clip.id, updated)}
+                  onCommitEdit={onCommitClipEdit}
                   snapToGrid={snapToGrid}
                   gridSnapSize={gridSnapSize}
                   trackClips={track.clips}

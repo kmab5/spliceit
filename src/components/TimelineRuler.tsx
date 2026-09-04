@@ -8,6 +8,7 @@ interface TimelineRulerProps {
   isLooping: boolean;
   loopStart?: number;
   loopEnd?: number;
+  onUpdateLoopRegion?: (region: { startTime: number; endTime: number }) => void;
 }
 
 export const TimelineRuler: React.FC<TimelineRulerProps> = ({
@@ -17,10 +18,13 @@ export const TimelineRuler: React.FC<TimelineRulerProps> = ({
   onScrubTime,
   isLooping,
   loopStart = 0,
-  loopEnd = 8
+  loopEnd = 8,
+  onUpdateLoopRegion
 }) => {
   const rulerRef = useRef<HTMLDivElement>(null);
-  const widthPx = Math.max(1200, totalDuration * zoom);
+  // Must match ArrangementView's track-canvas width or the ruler ticks drift
+  // out of alignment with the clips at low zoom levels.
+  const widthPx = Math.max(800, totalDuration * zoom);
 
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!rulerRef.current) return;
@@ -33,6 +37,33 @@ export const TimelineRuler: React.FC<TimelineRulerProps> = ({
       const currentX = moveEvent.clientX - rect.left;
       const scrubTime = Math.max(0, currentX / zoom);
       onScrubTime(scrubTime);
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
+  // Loop boundary dragging. The loop window was previously hardcoded to 0-8s
+  // in the transport clock and unreachable from the UI.
+  const handleLoopEdgeDrag = (e: React.MouseEvent, edge: 'start' | 'end') => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!onUpdateLoopRegion || !rulerRef.current) return;
+
+    const rect = rulerRef.current.getBoundingClientRect();
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const t = Math.max(0, (moveEvent.clientX - rect.left) / zoom);
+      if (edge === 'start') {
+        onUpdateLoopRegion({ startTime: Math.min(t, loopEnd - 0.25), endTime: loopEnd });
+      } else {
+        onUpdateLoopRegion({ startTime: loopStart, endTime: Math.max(t, loopStart + 0.25) });
+      }
     };
 
     const onMouseUp = () => {
@@ -63,11 +94,26 @@ export const TimelineRuler: React.FC<TimelineRulerProps> = ({
             left: `${loopStart * zoom}px`,
             width: `${(loopEnd - loopStart) * zoom}px`
           }}
-          className="absolute top-0 bottom-0 bg-[#F27D26]/10 border-l border-r border-[#F27D26]/40 pointer-events-none"
+          className="absolute top-0 bottom-0 bg-[#F27D26]/10 border-l border-r border-[#F27D26]/40"
         >
-          <div className="text-[8px] font-mono text-[#F27D26] px-1 bg-[#F27D26]/20 font-bold w-max">
+          <div className="text-[8px] font-mono text-[#F27D26] px-1 bg-[#F27D26]/20 font-bold w-max pointer-events-none">
             LOOP REGION
           </div>
+
+          {onUpdateLoopRegion && (
+            <>
+              <div
+                onMouseDown={(e) => handleLoopEdgeDrag(e, 'start')}
+                title="Drag loop start"
+                className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize hover:bg-[#F27D26]/70 z-20"
+              />
+              <div
+                onMouseDown={(e) => handleLoopEdgeDrag(e, 'end')}
+                title="Drag loop end"
+                className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize hover:bg-[#F27D26]/70 z-20"
+              />
+            </>
+          )}
         </div>
       )}
 

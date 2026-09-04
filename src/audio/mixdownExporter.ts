@@ -8,7 +8,8 @@ import {
   AudioMetadataTags,
   MasterSection,
   ExportSettings,
-  ExportFormat
+  ExportFormat,
+  MasterBusState
 } from '../types';
 import { Mp3Encoder } from '@breezystack/lamejs';
 
@@ -30,7 +31,8 @@ export async function renderTimelineMixdown(
   metadata: AudioMetadataTags,
   sections: MasterSection[] = [],
   exportSettings?: Partial<ExportSettings>,
-  onProgress?: RenderProgressCallback
+  onProgress?: RenderProgressCallback,
+  masterBus: MasterBusState = { volumeDb: 0, isMuted: false }
 ): Promise<ExportResult> {
   const settings: ExportSettings = {
     format: exportSettings?.format || 'wav-24',
@@ -67,7 +69,7 @@ export async function renderTimelineMixdown(
   const offlineCtx = new OfflineAudioContext(numChannels, totalFrames, sampleRate);
 
   // Build Offline DSP Mastering Chain
-  const masterBus = offlineCtx.createGain();
+  const masterBusNode = offlineCtx.createGain();
 
   // 1. High-cut 12 kHz (Harsh cut)
   const highCut = offlineCtx.createBiquadFilter();
@@ -82,10 +84,32 @@ export async function renderTimelineMixdown(
   mudScoop.gain.value = dspSettings.mudScoopBand.enabled ? dspSettings.mudScoopBand.gainDb : 0;
   mudScoop.Q.value = dspSettings.mudScoopBand.q;
 
-  // 3. Stereo Width
-  const widthGain = offlineCtx.createGain();
-  const width = dspSettings.stereoImaging.enabled ? dspSettings.stereoImaging.widthPercent / 100 : 1.0;
-  widthGain.gain.value = Math.max(0.1, Math.min(1.5, width));
+  // 3. Stereo Width — genuine mid/side encode → scale → decode matrix,
+  // matching the realtime engine. The previous single series gain node was a
+  // volume control mislabelled as width, so exports never matched playback.
+  const width = dspSettings.stereoImaging.enabled
+    ? Math.max(0, Math.min(2.0, dspSettings.stereoImaging.widthPercent / 100))
+    : 1.0;
+
+  const msSplitter = offlineCtx.createChannelSplitter(2);
+  const msMerger = offlineCtx.createChannelMerger(2);
+  const midBus = offlineCtx.createGain();
+  const sideBus = offlineCtx.createGain();
+  const sideWidthGain = offlineCtx.createGain();
+  sideWidthGain.gain.value = width;
+  const msLeftBus = offlineCtx.createGain();
+  const msRightBus = offlineCtx.createGain();
+
+  const lToMid = offlineCtx.createGain();
+  lToMid.gain.value = 0.5;
+  const rToMid = offlineCtx.createGain();
+  rToMid.gain.value = 0.5;
+  const lToSide = offlineCtx.createGain();
+  lToSide.gain.value = 0.5;
+  const rToSide = offlineCtx.createGain();
+  rToSide.gain.value = -0.5;
+  const sideToRight = offlineCtx.createGain();
+  sideToRight.gain.value = -1.0;
 
   // 4. True-Peak Limiter
   const limiter = offlineCtx.createDynamicsCompressor();
@@ -94,11 +118,34 @@ export async function renderTimelineMixdown(
   limiter.attack.value = 0.001;
   limiter.release.value = dspSettings.limiter.releaseMs / 1000;
 
-  masterBus.connect(highCut);
+  // 5. Master fader — now honoured in the render instead of being ignored.
+  const masterFader = offlineCtx.createGain();
+  masterFader.gain.value = masterBus.isMuted ? 0 : Math.pow(10, masterBus.volumeDb / 20);
+
+  masterBusNode.connect(highCut);
   highCut.connect(mudScoop);
-  mudScoop.connect(widthGain);
-  widthGain.connect(limiter);
-  limiter.connect(offlineCtx.destination);
+
+  mudScoop.connect(msSplitter);
+  msSplitter.connect(lToMid, 0);
+  msSplitter.connect(rToMid, 1);
+  lToMid.connect(midBus);
+  rToMid.connect(midBus);
+  msSplitter.connect(lToSide, 0);
+  msSplitter.connect(rToSide, 1);
+  lToSide.connect(sideBus);
+  rToSide.connect(sideBus);
+  sideBus.connect(sideWidthGain);
+  midBus.connect(msLeftBus);
+  sideWidthGain.connect(msLeftBus);
+  midBus.connect(msRightBus);
+  sideWidthGain.connect(sideToRight);
+  sideToRight.connect(msRightBus);
+  msLeftBus.connect(msMerger, 0, 0);
+  msRightBus.connect(msMerger, 0, 1);
+
+  msMerger.connect(limiter);
+  limiter.connect(masterFader);
+  masterFader.connect(offlineCtx.destination);
 
   onProgress?.(40, 'Placing audio clips and baking volume curves...');
 
@@ -117,9 +164,9 @@ export async function renderTimelineMixdown(
     if (panner) {
       panner.pan.value = Math.max(-1, Math.min(1, track.pan));
       trackGain.connect(panner);
-      panner.connect(masterBus);
+      panner.connect(masterBusNode);
     } else {
-      trackGain.connect(masterBus);
+      trackGain.connect(masterBusNode);
     }
 
     track.clips.forEach((clip) => {

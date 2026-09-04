@@ -114,6 +114,23 @@ export interface MasterSection {
   color: string;
 }
 
+/**
+ * Master bus output state. Applied to both realtime playback and offline mixdown
+ * so that what you hear is what gets rendered.
+ */
+export interface MasterBusState {
+  volumeDb: number; // -24 to +6 dB
+  isMuted: boolean;
+}
+
+/**
+ * Transport loop region in seconds. Replaces the previously hardcoded 0-8s loop.
+ */
+export interface LoopRegion {
+  startTime: number;
+  endTime: number;
+}
+
 export type ExportFormat = 'wav-24' | 'wav-16' | 'wav-32' | 'flac' | 'mp3' | 'ogg';
 
 export interface ExportSettings {
@@ -141,6 +158,8 @@ export interface SpliceItProjectFile {
   dspSettings: DspMasteringSettings;
   metadata: AudioMetadataTags;
   masterSections?: MasterSection[];
+  masterBus?: MasterBusState;
+  loopRegion?: LoopRegion;
   savedAtUtc: string;
 }
 

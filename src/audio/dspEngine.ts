@@ -14,6 +14,7 @@ export class SpliceItDspEngine {
 
   // Multiband Nodes
   private mbLowSplitter: BiquadFilterNode | null = null;
+  private mbMidHighPass: BiquadFilterNode | null = null;
   private mbMidBandPass: BiquadFilterNode | null = null;
   private mbHighSplitter: BiquadFilterNode | null = null;
   private mbLowComp: DynamicsCompressorNode | null = null;
@@ -21,19 +22,27 @@ export class SpliceItDspEngine {
   private mbHighComp: DynamicsCompressorNode | null = null;
   private mbSummer: GainNode | null = null;
 
-  // Stereo Mid/Side Width Nodes
+  // Stereo Mid/Side Width Matrix Nodes
   private msSplitter: ChannelSplitterNode | null = null;
   private msMerger: ChannelMergerNode | null = null;
-  private sideGain: GainNode | null = null;
-  private midGain: GainNode | null = null;
+  private midBus: GainNode | null = null;
+  private sideBus: GainNode | null = null;
+  private sideWidthGain: GainNode | null = null;
+  private msLeftBus: GainNode | null = null;
+  private msRightBus: GainNode | null = null;
 
   // Limiter & Master Output
   private truePeakLimiter: DynamicsCompressorNode | null = null;
   private masterOutputGain: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
 
+  // Master bus state (mirrors the UI master fader)
+  private masterVolumeDb = 0;
+  private masterMuted = false;
+
   // Active playing sources mapping: clipId -> AudioBufferSourceNode
   private activeSources: Map<string, { source: AudioBufferSourceNode; gainNode: GainNode }> = new Map();
+  private sourceSeq = 0;
 
   // Metering cached values
   private currentRms = 0;
@@ -78,10 +87,19 @@ export class SpliceItDspEngine {
     this.mbLowSplitter.type = 'lowpass';
     this.mbLowSplitter.frequency.value = 250;
 
+    // Mid band was previously a wide 'peaking' filter, which passes the FULL
+    // spectrum through. Summing it with the low and high bands meant the whole
+    // signal was counted roughly three times (~+9 dB and very muddy).
+    // A real band is a highpass at the low crossover into a lowpass at the high one.
+    this.mbMidHighPass = ctx.createBiquadFilter();
+    this.mbMidHighPass.type = 'highpass';
+    this.mbMidHighPass.frequency.value = 250;
+    this.mbMidHighPass.Q.value = 0.707;
+
     this.mbMidBandPass = ctx.createBiquadFilter();
-    this.mbMidBandPass.type = 'peaking';
-    this.mbMidBandPass.frequency.value = 1000;
-    this.mbMidBandPass.Q.value = 0.5;
+    this.mbMidBandPass.type = 'lowpass';
+    this.mbMidBandPass.frequency.value = 4000;
+    this.mbMidBandPass.Q.value = 0.707;
 
     this.mbHighSplitter = ctx.createBiquadFilter();
     this.mbHighSplitter.type = 'highpass';
@@ -117,7 +135,8 @@ export class SpliceItDspEngine {
     this.mbLowSplitter.connect(this.mbLowComp);
     this.mbLowComp.connect(this.mbSummer);
 
-    this.mudScoopFilter.connect(this.mbMidBandPass);
+    this.mudScoopFilter.connect(this.mbMidHighPass);
+    this.mbMidHighPass.connect(this.mbMidBandPass);
     this.mbMidBandPass.connect(this.mbMidComp);
     this.mbMidComp.connect(this.mbSummer);
 
@@ -125,19 +144,66 @@ export class SpliceItDspEngine {
     this.mbHighSplitter.connect(this.mbHighComp);
     this.mbHighComp.connect(this.mbSummer);
 
-    // 4. Stereo Mid/Side Width Network
+    // 4. Stereo Mid/Side Width Network — a genuine M/S encode → scale → decode
+    // matrix. The previous implementation put a single gain node in series,
+    // which is a volume control, not a width control.
+    //
+    //   Mid  = (L + R) * 0.5      Side = (L - R) * 0.5
+    //   L'   = Mid + Side * W     R'   = Mid - Side * W
+    //
+    // W = 0 collapses to mono, W = 1 is unity, W = 2 is exaggerated width.
     this.msSplitter = ctx.createChannelSplitter(2);
     this.msMerger = ctx.createChannelMerger(2);
-    this.sideGain = ctx.createGain();
-    this.midGain = ctx.createGain();
 
-    this.sideGain.gain.value = 1.0;
-    this.midGain.gain.value = 1.0;
+    this.midBus = ctx.createGain();
+    this.midBus.gain.value = 1.0;
+    this.sideBus = ctx.createGain();
+    this.sideBus.gain.value = 1.0;
+    this.sideWidthGain = ctx.createGain();
+    this.sideWidthGain.gain.value = 1.0;
+    this.msLeftBus = ctx.createGain();
+    this.msLeftBus.gain.value = 1.0;
+    this.msRightBus = ctx.createGain();
+    this.msRightBus.gain.value = 1.0;
 
-    // Mid/Side matrix
-    // In L, In R -> Mid = (L+R)*0.5, Side = (L-R)*0.5
-    // For WebAudio simplicity without custom worklet, we control stereo width via channel panning & stereo balance
-    this.mbSummer.connect(this.sideGain);
+    // Half-gain taps used to build the encode matrix.
+    const lToMid = ctx.createGain();
+    lToMid.gain.value = 0.5;
+    const rToMid = ctx.createGain();
+    rToMid.gain.value = 0.5;
+    const lToSide = ctx.createGain();
+    lToSide.gain.value = 0.5;
+    const rToSide = ctx.createGain();
+    rToSide.gain.value = -0.5; // phase inversion produces the difference signal
+    const sideToRight = ctx.createGain();
+    sideToRight.gain.value = -1.0;
+
+    this.mbSummer.connect(this.msSplitter);
+
+    // Encode
+    this.msSplitter.connect(lToMid, 0);
+    this.msSplitter.connect(rToMid, 1);
+    lToMid.connect(this.midBus);
+    rToMid.connect(this.midBus);
+
+    this.msSplitter.connect(lToSide, 0);
+    this.msSplitter.connect(rToSide, 1);
+    lToSide.connect(this.sideBus);
+    rToSide.connect(this.sideBus);
+
+    // Width scaling on the side component only
+    this.sideBus.connect(this.sideWidthGain);
+
+    // Decode
+    this.midBus.connect(this.msLeftBus);
+    this.sideWidthGain.connect(this.msLeftBus);
+
+    this.midBus.connect(this.msRightBus);
+    this.sideWidthGain.connect(sideToRight);
+    sideToRight.connect(this.msRightBus);
+
+    this.msLeftBus.connect(this.msMerger, 0, 0);
+    this.msRightBus.connect(this.msMerger, 0, 1);
 
     // 5. True-Peak Brickwall Limiter
     this.truePeakLimiter = ctx.createDynamicsCompressor();
@@ -147,11 +213,13 @@ export class SpliceItDspEngine {
     this.truePeakLimiter.attack.value = 0.001; // 1ms attack
     this.truePeakLimiter.release.value = 0.05; // 50ms release
 
-    this.sideGain.connect(this.truePeakLimiter);
+    this.msMerger.connect(this.truePeakLimiter);
 
     // 6. Master Output & Analyser
     this.masterOutputGain = ctx.createGain();
-    this.masterOutputGain.gain.value = 1.0;
+    this.masterOutputGain.gain.value = this.masterMuted
+      ? 0
+      : Math.pow(10, this.masterVolumeDb / 20);
 
     this.analyser = ctx.createAnalyser();
     this.analyser.fftSize = 1024;
@@ -168,7 +236,7 @@ export class SpliceItDspEngine {
     if (!settings.enabled) {
       if (this.highCutFilter) this.highCutFilter.gain.value = 0;
       if (this.mudScoopFilter) this.mudScoopFilter.gain.value = 0;
-      if (this.sideGain) this.sideGain.gain.value = 1.0;
+      if (this.sideWidthGain) this.sideWidthGain.gain.value = 1.0;
       return;
     }
 
@@ -190,9 +258,12 @@ export class SpliceItDspEngine {
     }
 
     // Multiband Crossover & Thresholds
-    if (this.mbLowSplitter && this.mbHighSplitter) {
+    if (this.mbLowSplitter && this.mbHighSplitter && this.mbMidHighPass && this.mbMidBandPass) {
       this.mbLowSplitter.frequency.value = settings.multiband.lowCrossoverHz;
       this.mbHighSplitter.frequency.value = settings.multiband.highCrossoverHz;
+      // Keep the mid band's edges locked to the same crossover points.
+      this.mbMidHighPass.frequency.value = settings.multiband.lowCrossoverHz;
+      this.mbMidBandPass.frequency.value = settings.multiband.highCrossoverHz;
     }
     if (this.mbLowComp && this.mbMidComp && this.mbHighComp) {
       this.mbLowComp.threshold.value = settings.multiband.lowBand.thresholdDb;
@@ -203,10 +274,13 @@ export class SpliceItDspEngine {
       this.mbHighComp.ratio.value = settings.multiband.highBand.ratio;
     }
 
-    // Stereo Width (0% to 200%)
-    if (this.sideGain) {
-      const widthFactor = settings.stereoImaging.enabled ? settings.stereoImaging.widthPercent / 100 : 1.0;
-      this.sideGain.gain.value = Math.max(0.1, Math.min(1.5, widthFactor));
+    // Stereo Width (0% mono to 200% wide). The full range is now honoured;
+    // the old clamp of 0.1–1.5 made true mono and true widening unreachable.
+    if (this.sideWidthGain) {
+      const widthFactor = settings.stereoImaging.enabled
+        ? settings.stereoImaging.widthPercent / 100
+        : 1.0;
+      this.sideWidthGain.gain.value = Math.max(0, Math.min(2.0, widthFactor));
     }
 
     // True Peak Limiter
@@ -214,6 +288,20 @@ export class SpliceItDspEngine {
       this.truePeakLimiter.threshold.value = settings.limiter.ceilingDb;
       this.truePeakLimiter.release.value = settings.limiter.releaseMs / 1000;
     }
+  }
+
+  /**
+   * Applies the UI master fader and mute to the audio graph. Previously the
+   * master volume was tracked in React state and never reached the engine.
+   */
+  public setMasterOutput(volumeDb: number, isMuted: boolean) {
+    this.masterVolumeDb = volumeDb;
+    this.masterMuted = isMuted;
+    if (!this.masterOutputGain || !this.ctx) return;
+    const target = isMuted ? 0 : Math.pow(10, volumeDb / 20);
+    const now = this.ctx.currentTime;
+    this.masterOutputGain.gain.cancelScheduledValues(now);
+    this.masterOutputGain.gain.setTargetAtTime(target, now, 0.01);
   }
 
   public playTimeline(
@@ -286,6 +374,12 @@ export class SpliceItDspEngine {
           when = startTime + (clipStart - startSec);
         }
 
+        // Guard against zero/negative windows and reads past the source buffer.
+        if (duration <= 0.001) return;
+        if (offset >= clip.audioBuffer.duration) return;
+        duration = Math.min(duration, clip.audioBuffer.duration - offset);
+        if (duration <= 0.001) return;
+
         // Apply Fade-In and Fade-Out automation
         const clipScheduleStart = when;
         const clipScheduleEnd = when + duration;
@@ -305,7 +399,10 @@ export class SpliceItDspEngine {
 
         try {
           source.start(when, offset, duration);
-          this.activeSources.set(`${clip.id}-${Date.now()}`, { source, gainNode: clipGain });
+          // Date.now() collides when many clips are scheduled in the same tick,
+          // silently dropping sources from the stop list and leaking audio.
+          this.sourceSeq += 1;
+          this.activeSources.set(`${clip.id}-${this.sourceSeq}`, { source, gainNode: clipGain });
         } catch (e) {
           console.error("Error scheduling audio source:", e);
         }
@@ -314,23 +411,31 @@ export class SpliceItDspEngine {
   }
 
   public stopAll() {
-    if (this.ctx) {
-      const now = this.ctx.currentTime;
-      if (this.masterInputGain) {
-        this.masterInputGain.gain.cancelScheduledValues(now);
-        this.masterInputGain.gain.setValueAtTime(0, now);
-        this.masterInputGain.gain.setValueAtTime(1, now + 0.015);
-      }
+    const ctx = this.ctx;
+
+    if (ctx && this.masterInputGain) {
+      // Short linear ramp down and back up rather than two hard value steps,
+      // which were themselves producing the click they were meant to prevent.
+      const now = ctx.currentTime;
+      const g = this.masterInputGain.gain;
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(0, now + 0.008);
+      g.linearRampToValueAtTime(1, now + 0.024);
     }
 
     this.activeSources.forEach(({ source, gainNode }) => {
       try {
-        if (this.ctx) {
-          gainNode.gain.cancelScheduledValues(this.ctx.currentTime);
-          gainNode.gain.setValueAtTime(0, this.ctx.currentTime);
+        if (ctx) {
+          const now = ctx.currentTime;
+          gainNode.gain.cancelScheduledValues(now);
+          gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+          gainNode.gain.linearRampToValueAtTime(0, now + 0.008);
+          source.stop(now + 0.01);
+        } else {
+          source.stop(0);
         }
-        source.stop(0);
-        source.disconnect();
+        source.onended = null;
       } catch {
         // already stopped
       }

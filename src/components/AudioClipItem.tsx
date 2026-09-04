@@ -12,6 +12,8 @@ interface AudioClipItemProps {
   snapToGrid: boolean;
   gridSnapSize?: number;
   trackClips?: AudioClipModel[];
+  /** Fired once when a drag/trim gesture ends, so it becomes a single undo step. */
+  onCommitEdit?: () => void;
   onContextMenu?: (e: React.MouseEvent, clip: AudioClipModel) => void;
 }
 
@@ -25,9 +27,13 @@ export const AudioClipItem: React.FC<AudioClipItemProps> = ({
   snapToGrid,
   gridSnapSize = 0.25,
   trackClips = [],
+  onCommitEdit,
   onContextMenu
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Distinguishes a real drag from a plain click so a bare selection does not
+  // push a redundant undo entry.
+  const didMoveRef = useRef(false);
   const leftPx = clip.timelineStart * zoom;
   const widthPx = Math.max(16, clip.clipDuration * zoom);
 
@@ -88,6 +94,7 @@ export const AudioClipItem: React.FC<AudioClipItemProps> = ({
     const { leftBound, rightBound } = getClipMovementBounds(clip.id, initialStart, initialDuration, trackClips);
 
     const onMouseMove = (moveEvent: MouseEvent) => {
+      didMoveRef.current = true;
       const deltaX = moveEvent.clientX - startX;
       let newStart = initialStart + deltaX / zoom;
       if (snapToGrid) {
@@ -102,6 +109,10 @@ export const AudioClipItem: React.FC<AudioClipItemProps> = ({
     const onMouseUp = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      if (didMoveRef.current) {
+        didMoveRef.current = false;
+        onCommitEdit?.();
+      }
     };
 
     window.addEventListener('mousemove', onMouseMove);
@@ -118,6 +129,7 @@ export const AudioClipItem: React.FC<AudioClipItemProps> = ({
     const { leftBound } = getClipMovementBounds(clip.id, initialStart, initialDuration, trackClips);
 
     const onMouseMove = (moveEvent: MouseEvent) => {
+      didMoveRef.current = true;
       const deltaX = moveEvent.clientX - startX;
       let timeDelta = deltaX / zoom;
       if (snapToGrid) {
@@ -140,6 +152,10 @@ export const AudioClipItem: React.FC<AudioClipItemProps> = ({
     const onMouseUp = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      if (didMoveRef.current) {
+        didMoveRef.current = false;
+        onCommitEdit?.();
+      }
     };
 
     window.addEventListener('mousemove', onMouseMove);
@@ -155,6 +171,7 @@ export const AudioClipItem: React.FC<AudioClipItemProps> = ({
     const { rightBound } = getClipMovementBounds(clip.id, initialStart, initialDuration, trackClips);
 
     const onMouseMove = (moveEvent: MouseEvent) => {
+      didMoveRef.current = true;
       const deltaX = moveEvent.clientX - startX;
       let newDuration = initialDuration + deltaX / zoom;
       if (snapToGrid) {
@@ -169,6 +186,10 @@ export const AudioClipItem: React.FC<AudioClipItemProps> = ({
     const onMouseUp = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      if (didMoveRef.current) {
+        didMoveRef.current = false;
+        onCommitEdit?.();
+      }
     };
 
     window.addEventListener('mousemove', onMouseMove);

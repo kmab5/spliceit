@@ -7,7 +7,8 @@ import {
   SpliceItProjectFile,
   BottomInspectorTab,
   MasterSection,
-  LoadedAudioFile
+  LoadedAudioFile,
+  LoopRegion
 } from './types';
 import { dspEngine } from './audio/dspEngine';
 import { generateStudioStems, extractPeaksFromBuffer } from './audio/stemsGenerator';
@@ -22,6 +23,7 @@ import { BentoGridFooter } from './components/bento/BentoGridFooter';
 import { RightToolsSidebar } from './components/RightToolsSidebar';
 import { AudioFilesPool } from './components/AudioFilesPool';
 import { findNextAvailableSlot } from './utils/clipCollision';
+import { generateUniqueId } from './utils/idGenerator';
 import { Sliders, Tag, Layers, Code2, LayoutGrid, ChevronDown, ChevronUp, X, FolderOpen } from 'lucide-react';
 
 const INITIAL_DSP_SETTINGS: DspMasteringSettings = {
@@ -103,6 +105,22 @@ const INITIAL_MASTER_SECTIONS: MasterSection[] = [
   { id: 'sec-outro', name: 'Outro / Fade', startTime: 12.0, endTime: 16.0, color: '#BD00FF' }
 ];
 
+const HISTORY_LIMIT = 30;
+
+/**
+ * Structurally clones the track graph so that history snapshots never share
+ * object references with live state. AudioBuffer and peaks arrays are treated
+ * as immutable and intentionally shared by reference (cloning decoded audio on
+ * every edit would be ruinously expensive).
+ */
+function cloneTracks(tracks: AudioTrackModel[]): AudioTrackModel[] {
+  return tracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) }));
+}
+
+function cloneSections(sections: MasterSection[]): MasterSection[] {
+  return sections.map((s) => ({ ...s }));
+}
+
 export default function App() {
   const [projectName, setProjectName] = useState('SpliceIt Session');
   const [tracks, setTracks] = useState<AudioTrackModel[]>([]);
@@ -119,48 +137,121 @@ export default function App() {
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [gridSnapSize, setGridSnapSize] = useState(0.25);
 
-  // History State for Undo & Redo
+  // Loop region is now user-defined instead of a hardcoded 0-8 second window.
+  const [loopRegion, setLoopRegion] = useState<LoopRegion>({ startTime: 0, endTime: 8 });
+
+  // History State for Undo & Redo.
+  // Mirrored into refs so that snapshots can be pushed from event handlers
+  // without depending on a possibly-stale render closure.
   const [history, setHistory] = useState<{ tracks: AudioTrackModel[]; sections: MasterSection[] }[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const historyRef = useRef<{ tracks: AudioTrackModel[]; sections: MasterSection[] }[]>([]);
+  const historyIndexRef = useRef<number>(-1);
   const isUndoRedoActiveRef = useRef(false);
 
-  const pushHistorySnapshot = useCallback(
+  // Live mirrors of state used by imperative callbacks (playback clock, key handlers).
+  const tracksRef = useRef<AudioTrackModel[]>([]);
+  const masterSectionsRef = useRef<MasterSection[]>(INITIAL_MASTER_SECTIONS);
+
+  const commitHistory = useCallback(
     (newTracks: AudioTrackModel[], newSections: MasterSection[]) => {
       if (isUndoRedoActiveRef.current) return;
-      setHistory((prev) => {
-        const next = prev.slice(0, historyIndex + 1);
-        return [...next, { tracks: newTracks, sections: newSections }].slice(-30);
-      });
-      setHistoryIndex((prev) => Math.min(29, prev + 1));
+      const entry = {
+        tracks: cloneTracks(newTracks),
+        sections: cloneSections(newSections)
+      };
+      const truncated = historyRef.current.slice(0, historyIndexRef.current + 1);
+      let next = [...truncated, entry];
+      if (next.length > HISTORY_LIMIT) {
+        next = next.slice(next.length - HISTORY_LIMIT);
+      }
+      historyRef.current = next;
+      historyIndexRef.current = next.length - 1;
+      setHistory(next);
+      setHistoryIndex(next.length - 1);
     },
-    [historyIndex]
+    []
+  );
+
+  const resetHistory = useCallback((newTracks: AudioTrackModel[], newSections: MasterSection[]) => {
+    const entry = { tracks: cloneTracks(newTracks), sections: cloneSections(newSections) };
+    historyRef.current = [entry];
+    historyIndexRef.current = 0;
+    setHistory([entry]);
+    setHistoryIndex(0);
+  }, []);
+
+  /**
+   * Single mutation entry point. Derives the next track list from the current
+   * one, applies it, and records one history snapshot. Replaces the previous
+   * pattern of calling setState from inside a setState updater, which was an
+   * impure updater and double-fired under React StrictMode.
+   */
+  const applyTrackEdit = useCallback(
+    (mutator: (prev: AudioTrackModel[]) => AudioTrackModel[] | null): AudioTrackModel[] | null => {
+      const next = mutator(tracksRef.current);
+      if (!next) return null;
+      tracksRef.current = next;
+      setTracks(next);
+      commitHistory(next, masterSectionsRef.current);
+      return next;
+    },
+    [commitHistory]
+  );
+
+  /** Transient edit (drag, slider scrub) — updates state without a history entry. */
+  const applyTransientTrackEdit = useCallback(
+    (mutator: (prev: AudioTrackModel[]) => AudioTrackModel[] | null) => {
+      const next = mutator(tracksRef.current);
+      if (!next) return;
+      tracksRef.current = next;
+      setTracks(next);
+    },
+    []
   );
 
   const handleUndo = useCallback(() => {
-    if (historyIndex > 0) {
-      isUndoRedoActiveRef.current = true;
-      const target = history[historyIndex - 1];
-      setTracks(target.tracks);
-      setMasterSections(target.sections);
-      setHistoryIndex(historyIndex - 1);
-      setTimeout(() => {
-        isUndoRedoActiveRef.current = false;
-      }, 50);
-    }
-  }, [historyIndex, history]);
+    if (historyIndexRef.current <= 0) return;
+    isUndoRedoActiveRef.current = true;
+    const targetIdx = historyIndexRef.current - 1;
+    const target = historyRef.current[targetIdx];
+    const restoredTracks = cloneTracks(target.tracks);
+    const restoredSections = cloneSections(target.sections);
+    tracksRef.current = restoredTracks;
+    masterSectionsRef.current = restoredSections;
+    setTracks(restoredTracks);
+    setMasterSections(restoredSections);
+    historyIndexRef.current = targetIdx;
+    setHistoryIndex(targetIdx);
+    isUndoRedoActiveRef.current = false;
+  }, []);
 
   const handleRedo = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      isUndoRedoActiveRef.current = true;
-      const target = history[historyIndex + 1];
-      setTracks(target.tracks);
-      setMasterSections(target.sections);
-      setHistoryIndex(historyIndex + 1);
-      setTimeout(() => {
-        isUndoRedoActiveRef.current = false;
-      }, 50);
-    }
-  }, [historyIndex, history]);
+    if (historyIndexRef.current >= historyRef.current.length - 1) return;
+    isUndoRedoActiveRef.current = true;
+    const targetIdx = historyIndexRef.current + 1;
+    const target = historyRef.current[targetIdx];
+    const restoredTracks = cloneTracks(target.tracks);
+    const restoredSections = cloneSections(target.sections);
+    tracksRef.current = restoredTracks;
+    masterSectionsRef.current = restoredSections;
+    setTracks(restoredTracks);
+    setMasterSections(restoredSections);
+    historyIndexRef.current = targetIdx;
+    setHistoryIndex(targetIdx);
+    isUndoRedoActiveRef.current = false;
+  }, []);
+
+  const updateMasterSections = useCallback(
+    (sections: MasterSection[], recordHistory = true) => {
+      masterSectionsRef.current = sections;
+      setMasterSections(sections);
+      if (recordHistory) {
+        commitHistory(tracksRef.current, sections);
+      }
+    },
+    [commitHistory]
+  );
 
   // Selected Clip & Bottom Dock Tab
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
@@ -226,6 +317,40 @@ export default function App() {
   // Animation frame and timer tracking
   const playbackStartTimeRef = useRef(0);
   const playbackStartTimelineSecRef = useRef(0);
+
+  // Live mirrors of transport state, read by the rAF playback clock.
+  const isPlayingRef = useRef(false);
+  const isLoopingRef = useRef(false);
+  const currentTimeRef = useRef(0);
+  const totalDurationRef = useRef(16.0);
+  const loopRegionRef = useRef<LoopRegion>({ startTime: 0, endTime: 8 });
+  const selectedClipIdRef = useRef<string | null>(null);
+  const duplicatedClipIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+  useEffect(() => {
+    isLoopingRef.current = isLooping;
+  }, [isLooping]);
+  useEffect(() => {
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
+  useEffect(() => {
+    totalDurationRef.current = totalDuration;
+  }, [totalDuration]);
+  useEffect(() => {
+    loopRegionRef.current = loopRegion;
+  }, [loopRegion]);
+  useEffect(() => {
+    tracksRef.current = tracks;
+  }, [tracks]);
+  useEffect(() => {
+    masterSectionsRef.current = masterSections;
+  }, [masterSections]);
+  useEffect(() => {
+    selectedClipIdRef.current = selectedClipId;
+  }, [selectedClipId]);
 
   // 1. Initial Session Stems Setup
   const loadDemoStems = useCallback(async () => {
@@ -346,11 +471,13 @@ export default function App() {
       };
 
       const initialTracks = [drumTrack, bassTrack, synthTrack, ambientTrack];
+      tracksRef.current = initialTracks;
       setTracks(initialTracks);
-      setTotalDuration(Math.max(16, stems.drums.buffer.duration * 2));
+      const demoDuration = Math.max(16, stems.drums.buffer.duration * 2);
+      setTotalDuration(demoDuration);
       setSelectedClipId(drumTrack.clips[0].id);
-      setHistory([{ tracks: initialTracks, sections: INITIAL_MASTER_SECTIONS }]);
-      setHistoryIndex(0);
+      setLoopRegion({ startTime: 0, endTime: Math.min(demoDuration, stems.drums.buffer.duration) });
+      resetHistory(initialTracks, INITIAL_MASTER_SECTIONS);
 
       // Populate Audio Media Pool with initial studio stems
       const demoMediaPool: LoadedAudioFile[] = [
@@ -403,7 +530,7 @@ export default function App() {
     } catch (e) {
       console.error('Error generating stems:', e);
     }
-  }, []);
+  }, [resetHistory]);
 
   useEffect(() => {
     loadDemoStems();
@@ -415,96 +542,127 @@ export default function App() {
   }, [dspSettings]);
 
   // 3. Playback Transport Clock
+  // Depends only on isPlaying. Every other value the clock needs is read from a
+  // ref, so toggling loop / editing clips mid-playback no longer restarts the
+  // transport, and `tick` can never observe a stale isPlaying.
   useEffect(() => {
-    let animId: number;
-
-    if (isPlaying) {
-      const audioCtx = dspEngine.getAudioContext();
-      playbackStartTimeRef.current = audioCtx.currentTime;
-      playbackStartTimelineSecRef.current = currentTime;
-
-      // Launch audio playback through DSP pipeline
-      dspEngine.playTimeline(tracks, currentTime, totalDuration);
-
-      const tick = () => {
-        const elapsed = audioCtx.currentTime - playbackStartTimeRef.current;
-        let newTime = playbackStartTimelineSecRef.current + elapsed;
-
-        if (isLooping && newTime >= 8.0) {
-          // Loop between 0 and 8 seconds
-          newTime = newTime % 8.0;
-          playbackStartTimeRef.current = audioCtx.currentTime;
-          playbackStartTimelineSecRef.current = 0;
-          dspEngine.playTimeline(tracks, 0, totalDuration);
-        } else if (newTime >= totalDuration) {
-          setIsPlaying(false);
-          dspEngine.stopAll();
-          newTime = 0;
-        }
-
-        setCurrentTime(newTime);
-        if (isPlaying) {
-          animId = requestAnimationFrame(tick);
-        }
-      };
-
-      animId = requestAnimationFrame(tick);
-    } else {
+    if (!isPlaying) {
       dspEngine.stopAll();
+      return;
     }
+
+    const audioCtx = dspEngine.getAudioContext();
+    const beginAt = currentTimeRef.current;
+    playbackStartTimeRef.current = audioCtx.currentTime;
+    playbackStartTimelineSecRef.current = beginAt;
+    dspEngine.playTimeline(tracksRef.current, beginAt, totalDurationRef.current);
+
+    let animId = 0;
+
+    const tick = () => {
+      if (!isPlayingRef.current) return;
+
+      const elapsed = audioCtx.currentTime - playbackStartTimeRef.current;
+      let newTime = playbackStartTimelineSecRef.current + elapsed;
+
+      const { startTime: loopStart, endTime: loopEnd } = loopRegionRef.current;
+
+      if (isLoopingRef.current && loopEnd > loopStart && newTime >= loopEnd) {
+        newTime = loopStart;
+        playbackStartTimeRef.current = audioCtx.currentTime;
+        playbackStartTimelineSecRef.current = loopStart;
+        dspEngine.playTimeline(tracksRef.current, loopStart, totalDurationRef.current);
+      } else if (newTime >= totalDurationRef.current) {
+        dspEngine.stopAll();
+        setIsPlaying(false);
+        setCurrentTime(0);
+        return;
+      }
+
+      setCurrentTime(newTime);
+      animId = requestAnimationFrame(tick);
+    };
+
+    animId = requestAnimationFrame(tick);
 
     return () => {
       cancelAnimationFrame(animId);
       dspEngine.stopAll();
     };
-  }, [isPlaying, isLooping, totalDuration]);
+  }, [isPlaying]);
+
+  // 3b. Push master bus volume & mute into the live audio graph.
+  useEffect(() => {
+    dspEngine.setMasterOutput(masterVolumeDb, isMasterMuted);
+  }, [masterVolumeDb, isMasterMuted]);
 
   // Playback Control Handlers
-  const handleTogglePlay = () => {
-    if (isPlaying) {
+  const handleTogglePlay = useCallback(() => {
+    if (isPlayingRef.current) {
+      isPlayingRef.current = false;
       setIsPlaying(false);
       dspEngine.stopAll();
     } else {
+      // Prime the audio context from within the user gesture so browsers
+      // reliably resume a suspended context.
+      dspEngine.getAudioContext();
+      isPlayingRef.current = true;
       setIsPlaying(true);
     }
-  };
+  }, []);
 
-  const handleStop = () => {
+  const handleStop = useCallback(() => {
+    isPlayingRef.current = false;
     setIsPlaying(false);
     dspEngine.stopAll();
+    currentTimeRef.current = 0;
     setCurrentTime(0);
-  };
+  }, []);
 
-  const handleScrubTime = (time: number) => {
-    setCurrentTime(time);
-    if (isPlaying) {
-      dspEngine.playTimeline(tracks, time, totalDuration);
+  const handleScrubTime = useCallback((time: number) => {
+    const clamped = Math.max(0, Math.min(totalDurationRef.current, time));
+    currentTimeRef.current = clamped;
+    setCurrentTime(clamped);
+
+    if (isPlayingRef.current) {
       const audioCtx = dspEngine.getAudioContext();
+      // Anchor the clock BEFORE rescheduling so the first tick after a scrub
+      // cannot read a start time that predates the new sources.
       playbackStartTimeRef.current = audioCtx.currentTime;
-      playbackStartTimelineSecRef.current = time;
+      playbackStartTimelineSecRef.current = clamped;
+      dspEngine.playTimeline(tracksRef.current, clamped, totalDurationRef.current);
     }
-  };
+  }, []);
 
-  const handleGoToStart = () => {
+  const handleGoToStart = useCallback(() => {
     handleScrubTime(0);
-  };
+  }, [handleScrubTime]);
 
-  const handleGoToEnd = () => {
-    handleScrubTime(totalDuration);
-  };
+  const handleGoToEnd = useCallback(() => {
+    handleScrubTime(totalDurationRef.current);
+  }, [handleScrubTime]);
 
   // 4. Keyboard Shortcuts: Space (Play/Pause), S (Split Clip), Home (Go to Start), End (Go to End), Ctrl+Z (Undo), Ctrl+Y (Redo)
+  // The split handler is reached through a ref because it is declared below this
+  // effect; listing it as a dependency would evaluate it in its temporal dead zone.
+  const splitHandlerRef = useRef<() => void>(() => {});
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
+      ) {
         return;
       }
       if (e.code === 'Space') {
         e.preventDefault();
         handleTogglePlay();
-      } else if (e.code === 'KeyS') {
+      } else if (e.code === 'KeyS' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
-        handleSplitSelectedClip();
+        splitHandlerRef.current();
       } else if (e.code === 'Home') {
         e.preventDefault();
         handleGoToStart();
@@ -526,81 +684,88 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying, currentTime, selectedClipId, tracks, totalDuration, handleUndo, handleRedo]);
+  }, [handleTogglePlay, handleGoToStart, handleGoToEnd, handleUndo, handleRedo]);
+
+  const TRACK_COLORS = ['#00D2FF', '#BD00FF', '#FFAA00', '#00FFA3', '#FF0055'];
+
+  /** Re-derives each clip's trackIndex after any structural change to the track list. */
+  const reindexTracks = (list: AudioTrackModel[]): AudioTrackModel[] =>
+    list.map((t, trkIdx) => ({
+      ...t,
+      clips: t.clips.map((c) => (c.trackIndex === trkIdx ? c : { ...c, trackIndex: trkIdx }))
+    }));
 
   // Track & Clip Management
   const handleMoveTrackUp = (trackIndex: number) => {
-    if (trackIndex <= 0) return;
-    setTracks((prev) => {
+    applyTrackEdit((prev) => {
+      if (trackIndex <= 0 || trackIndex >= prev.length) return null;
       const copy = [...prev];
-      const temp = copy[trackIndex];
-      copy[trackIndex] = copy[trackIndex - 1];
-      copy[trackIndex - 1] = temp;
-      pushHistorySnapshot(copy, masterSections);
-      return copy;
+      [copy[trackIndex - 1], copy[trackIndex]] = [copy[trackIndex], copy[trackIndex - 1]];
+      return reindexTracks(copy);
     });
   };
 
   const handleMoveTrackDown = (trackIndex: number) => {
-    if (trackIndex >= tracks.length - 1) return;
-    setTracks((prev) => {
+    applyTrackEdit((prev) => {
+      if (trackIndex < 0 || trackIndex >= prev.length - 1) return null;
       const copy = [...prev];
-      const temp = copy[trackIndex];
-      copy[trackIndex] = copy[trackIndex + 1];
-      copy[trackIndex + 1] = temp;
-      pushHistorySnapshot(copy, masterSections);
-      return copy;
+      [copy[trackIndex], copy[trackIndex + 1]] = [copy[trackIndex + 1], copy[trackIndex]];
+      return reindexTracks(copy);
     });
   };
 
-  // Track & Clip Management
+  // Transient: fired continuously while dragging faders / pan knobs, so it must
+  // not spam the undo stack.
   const handleUpdateTrack = (trackIndex: number, updated: Partial<AudioTrackModel>) => {
-    setTracks((prev) => {
+    applyTransientTrackEdit((prev) => {
+      if (!prev[trackIndex]) return null;
       const copy = [...prev];
-      if (copy[trackIndex]) {
-        copy[trackIndex] = { ...copy[trackIndex], ...updated };
-      }
+      copy[trackIndex] = { ...copy[trackIndex], ...updated };
       return copy;
     });
   };
 
   const handleDeleteTrack = (trackIndex: number) => {
-    setTracks((prev) => {
-      const next = prev.filter((_, idx) => idx !== trackIndex);
-      pushHistorySnapshot(next, masterSections);
-      return next;
+    applyTrackEdit((prev) => {
+      if (!prev[trackIndex]) return null;
+      return reindexTracks(prev.filter((_, idx) => idx !== trackIndex));
     });
   };
 
   const handleAddTrack = () => {
-    const colors = ['#00D2FF', '#BD00FF', '#FFAA00', '#00FFA3', '#FF0055'];
-    const newTrack: AudioTrackModel = {
-      id: `trk-${Date.now()}`,
-      name: `Audio Track ${tracks.length + 1}`,
-      volumeDb: 0.0,
-      pan: 0.0,
-      isMuted: false,
-      isSoloed: false,
-      color: colors[tracks.length % colors.length],
-      clips: []
-    };
-    setTracks((prev) => {
-      const next = [...prev, newTrack];
-      pushHistorySnapshot(next, masterSections);
-      return next;
+    applyTrackEdit((prev) => {
+      const newTrack: AudioTrackModel = {
+        id: generateUniqueId('trk'),
+        name: `Audio Track ${prev.length + 1}`,
+        volumeDb: 0.0,
+        pan: 0.0,
+        isMuted: false,
+        isSoloed: false,
+        color: TRACK_COLORS[prev.length % TRACK_COLORS.length],
+        clips: []
+      };
+      return [...prev, newTrack];
     });
   };
 
+  // Transient: fired on every mousemove during clip drag / trim.
   const handleUpdateClip = (trackIndex: number, clipId: string, updated: Partial<AudioClipModel>) => {
-    setTracks((prev) => {
+    applyTransientTrackEdit((prev) => {
+      const track = prev[trackIndex];
+      if (!track) return null;
       const copy = [...prev];
-      const track = copy[trackIndex];
-      if (!track) return prev;
-
-      track.clips = track.clips.map((c) => (c.id === clipId ? { ...c, ...updated } : c));
+      copy[trackIndex] = {
+        ...track,
+        clips: track.clips.map((c) => (c.id === clipId ? { ...c, ...updated } : c))
+      };
       return copy;
     });
   };
+
+  /** Called on mouse-up after a drag/trim gesture to record one undo entry. */
+  const handleCommitClipEdit = useCallback(() => {
+    commitHistory(tracksRef.current, masterSectionsRef.current);
+  }, [commitHistory]);
 
   // Find currently selected clip
   let selectedClip: AudioClipModel | null = null;
@@ -636,56 +801,74 @@ export default function App() {
 
     const rightClip: AudioClipModel = {
       ...clip,
-      id: `clip-${Date.now()}`,
+      id: generateUniqueId('clip'),
       name: `${clip.name} (Split)`,
       timelineStart: currentTime,
       clipOffset: clip.clipOffset + firstDuration,
       clipDuration: secondDuration
     };
 
-    setTracks((prev) => {
+    const applied = applyTrackEdit((prev) => {
+      const track = prev[selectedClipTrackIndex];
+      if (!track) return null;
       const copy = [...prev];
-      const track = copy[selectedClipTrackIndex];
-      if (!track) return prev;
-
-      track.clips = track.clips.map((c) => (c.id === clip.id ? leftClip : c));
-      track.clips.push(rightClip);
-      pushHistorySnapshot(copy, masterSections);
+      copy[selectedClipTrackIndex] = {
+        ...track,
+        clips: [...track.clips.map((c) => (c.id === clip.id ? leftClip : c)), rightClip]
+      };
       return copy;
     });
 
-    setSelectedClipId(rightClip.id);
+    if (applied) setSelectedClipId(rightClip.id);
   };
 
   const handleDuplicateSelectedClip = () => {
     if (!selectedClip || selectedClipTrackIndex === -1) return;
-    const newClip: AudioClipModel = {
-      ...selectedClip,
-      id: `clip-${Date.now()}`,
-      name: `${selectedClip.name} (Copy)`,
-      timelineStart: selectedClip.timelineStart + selectedClip.clipDuration + 0.5
-    };
+    const source = selectedClip;
 
-    setTracks((prev) => {
+    const applied = applyTrackEdit((prev) => {
+      const track = prev[selectedClipTrackIndex];
+      if (!track) return null;
+      // Place the copy in the first gap that actually fits instead of blindly
+      // offsetting by +0.5s, which could overlap a neighbouring clip.
+      const slot = findNextAvailableSlot(
+        source.timelineStart + source.clipDuration,
+        source.clipDuration,
+        track.clips
+      );
+      const newClip: AudioClipModel = {
+        ...source,
+        id: generateUniqueId('clip'),
+        name: `${source.name} (Copy)`,
+        timelineStart: slot
+      };
+      duplicatedClipIdRef.current = newClip.id;
       const copy = [...prev];
-      copy[selectedClipTrackIndex].clips.push(newClip);
-      pushHistorySnapshot(copy, masterSections);
+      copy[selectedClipTrackIndex] = { ...track, clips: [...track.clips, newClip] };
       return copy;
     });
-    setSelectedClipId(newClip.id);
+
+    if (applied && duplicatedClipIdRef.current) {
+      setSelectedClipId(duplicatedClipIdRef.current);
+    }
   };
 
   const handleDeleteSelectedClip = () => {
     if (!selectedClip || selectedClipTrackIndex === -1) return;
-    setTracks((prev) => {
+    const targetId = selectedClip.id;
+
+    const applied = applyTrackEdit((prev) => {
+      const track = prev[selectedClipTrackIndex];
+      if (!track) return null;
       const copy = [...prev];
-      copy[selectedClipTrackIndex].clips = copy[selectedClipTrackIndex].clips.filter(
-        (c) => c.id !== selectedClip!.id
-      );
-      pushHistorySnapshot(copy, masterSections);
+      copy[selectedClipTrackIndex] = {
+        ...track,
+        clips: track.clips.filter((c) => c.id !== targetId)
+      };
       return copy;
     });
-    setSelectedClipId(null);
+
+    if (applied) setSelectedClipId(null);
   };
 
   // External Audio File Import (WAV, MP3, FLAC, OGG)
@@ -696,20 +879,23 @@ export default function App() {
       const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
       const peaks = extractPeaksFromBuffer(decodedBuffer, 100);
 
+      const newClipId = generateUniqueId('clip');
+      const nextTrackIndex = tracksRef.current.length;
+
       const newTrack: AudioTrackModel = {
-        id: `trk-imported-${Date.now()}`,
+        id: generateUniqueId('trk'),
         name: file.name.replace(/\.[^/.]+$/, ''),
         volumeDb: 0.0,
         pan: 0.0,
         isMuted: false,
         isSoloed: false,
-        color: '#00D2FF',
+        color: TRACK_COLORS[nextTrackIndex % TRACK_COLORS.length],
         clips: [
           {
-            id: `clip-imported-${Date.now()}`,
+            id: newClipId,
             name: file.name,
             sourceFilePath: file.name,
-            trackIndex: tracks.length,
+            trackIndex: nextTrackIndex,
             timelineStart: 0.0,
             clipOffset: 0.0,
             clipDuration: decodedBuffer.duration,
@@ -726,7 +912,7 @@ export default function App() {
 
       // Register file into Audio Media Pool
       const poolEntry: LoadedAudioFile = {
-        id: `file-${Date.now()}`,
+        id: generateUniqueId('file'),
         name: file.name.replace(/\.[^/.]+$/, ''),
         fileName: file.name,
         duration: decodedBuffer.duration,
@@ -739,15 +925,12 @@ export default function App() {
       };
       setLoadedAudioFiles((prev) => [poolEntry, ...prev]);
 
-      setTracks((prev) => {
-        const next = [...prev, newTrack];
-        pushHistorySnapshot(next, masterSections);
-        return next;
-      });
-      if (decodedBuffer.duration > totalDuration) {
+      applyTrackEdit((prev) => [...prev, newTrack]);
+
+      if (decodedBuffer.duration > totalDurationRef.current) {
         setTotalDuration(Math.ceil(decodedBuffer.duration + 4));
       }
-      setSelectedClipId(newTrack.clips[0].id);
+      setSelectedClipId(newClipId);
     } catch (err) {
       alert(`Could not decode audio file: ${err}`);
     }
@@ -756,15 +939,15 @@ export default function App() {
   // Media Pool File Actions
   const handleInsertClipFromPool = (fileId: string, trackIndex: number, preferredStart?: number) => {
     const file = loadedAudioFiles.find((f) => f.id === fileId);
-    if (!file || !tracks[trackIndex]) return;
+    if (!file || !tracksRef.current[trackIndex]) return;
 
-    const targetTrack = tracks[trackIndex];
-    const startTime = preferredStart !== undefined ? preferredStart : currentTime;
+    const targetTrack = tracksRef.current[trackIndex];
+    const startTime = preferredStart !== undefined ? preferredStart : currentTimeRef.current;
     // Strictly prevent overlap on the same track
     const slot = findNextAvailableSlot(startTime, file.duration, targetTrack.clips);
 
     const newClip: AudioClipModel = {
-      id: `clip-pool-${Date.now()}`,
+      id: generateUniqueId('clip'),
       name: file.name,
       sourceFilePath: file.fileName,
       trackIndex,
@@ -780,17 +963,15 @@ export default function App() {
       audioBuffer: file.audioBuffer
     };
 
-    setTracks((prev) => {
+    applyTrackEdit((prev) => {
+      const track = prev[trackIndex];
+      if (!track) return null;
       const copy = [...prev];
-      copy[trackIndex] = {
-        ...copy[trackIndex],
-        clips: [...copy[trackIndex].clips, newClip]
-      };
-      pushHistorySnapshot(copy, masterSections);
+      copy[trackIndex] = { ...track, clips: [...track.clips, newClip] };
       return copy;
     });
 
-    if (slot + file.duration > totalDuration) {
+    if (slot + file.duration > totalDurationRef.current) {
       setTotalDuration(Math.ceil(slot + file.duration + 4));
     }
     setSelectedClipId(newClip.id);
@@ -800,10 +981,9 @@ export default function App() {
     const file = loadedAudioFiles.find((f) => f.id === fileId);
     if (!file) return;
 
-    const colors = ['#00D2FF', '#BD00FF', '#FFAA00', '#00FFA3', '#FF0055'];
-    const newTrackIndex = tracks.length;
+    const newTrackIndex = tracksRef.current.length;
     const newClip: AudioClipModel = {
-      id: `clip-pool-${Date.now()}`,
+      id: generateUniqueId('clip'),
       name: file.name,
       sourceFilePath: file.fileName,
       trackIndex: newTrackIndex,
@@ -820,23 +1000,19 @@ export default function App() {
     };
 
     const newTrack: AudioTrackModel = {
-      id: `trk-layer-${Date.now()}`,
+      id: generateUniqueId('trk'),
       name: file.name,
       volumeDb: 0.0,
       pan: 0.0,
       isMuted: false,
       isSoloed: false,
-      color: colors[newTrackIndex % colors.length],
+      color: TRACK_COLORS[newTrackIndex % TRACK_COLORS.length],
       clips: [newClip]
     };
 
-    setTracks((prev) => {
-      const next = [...prev, newTrack];
-      pushHistorySnapshot(next, masterSections);
-      return next;
-    });
+    applyTrackEdit((prev) => [...prev, newTrack]);
 
-    if (file.duration > totalDuration) {
+    if (file.duration > totalDurationRef.current) {
       setTotalDuration(Math.ceil(file.duration + 4));
     }
     setSelectedClipId(newClip.id);
@@ -848,51 +1024,42 @@ export default function App() {
 
   // Track insertion & layer operations
   const handleInsertTrack = (newTrack: AudioTrackModel, insertAfterIndex?: number) => {
-    setTracks((prev) => {
+    applyTrackEdit((prev) => {
       const copy = [...prev];
       if (insertAfterIndex !== undefined && insertAfterIndex >= 0 && insertAfterIndex < copy.length) {
         copy.splice(insertAfterIndex + 1, 0, newTrack);
       } else {
         copy.push(newTrack);
       }
-      const reindexed = copy.map((t, trkIdx) => ({
-        ...t,
-        clips: t.clips.map((c) => ({ ...c, trackIndex: trkIdx }))
-      }));
-      pushHistorySnapshot(reindexed, masterSections);
-      return reindexed;
+      return reindexTracks(copy);
     });
   };
 
   const handleAddClipToTrack = (trackIndex: number, clip: AudioClipModel) => {
-    setTracks((prev) => {
+    const applied = applyTrackEdit((prev) => {
+      const track = prev[trackIndex];
+      if (!track) return null;
       const copy = [...prev];
-      if (!copy[trackIndex]) return prev;
-      copy[trackIndex] = {
-        ...copy[trackIndex],
-        clips: [...copy[trackIndex].clips, clip]
-      };
-      pushHistorySnapshot(copy, masterSections);
+      copy[trackIndex] = { ...track, clips: [...track.clips, clip] };
       return copy;
     });
-    if (clip.timelineStart + clip.clipDuration > totalDuration) {
+    if (!applied) return;
+
+    if (clip.timelineStart + clip.clipDuration > totalDurationRef.current) {
       setTotalDuration(Math.ceil(clip.timelineStart + clip.clipDuration + 4));
     }
     setSelectedClipId(clip.id);
   };
 
   const handleDeleteClip = (trackIndex: number, clipId: string) => {
-    setTracks((prev) => {
+    const applied = applyTrackEdit((prev) => {
+      const track = prev[trackIndex];
+      if (!track) return null;
       const copy = [...prev];
-      if (!copy[trackIndex]) return prev;
-      copy[trackIndex] = {
-        ...copy[trackIndex],
-        clips: copy[trackIndex].clips.filter((c) => c.id !== clipId)
-      };
-      pushHistorySnapshot(copy, masterSections);
+      copy[trackIndex] = { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
       return copy;
     });
-    if (selectedClipId === clipId) {
+    if (applied && selectedClipIdRef.current === clipId) {
       setSelectedClipId(null);
     }
   };
@@ -919,6 +1086,8 @@ export default function App() {
       dspSettings,
       metadata,
       masterSections,
+      masterBus: { volumeDb: masterVolumeDb, isMuted: isMasterMuted },
+      loopRegion,
       savedAtUtc: new Date().toISOString()
     };
 
@@ -937,11 +1106,23 @@ export default function App() {
     if (loaded.dspSettings) setDspSettings(loaded.dspSettings);
     if (loaded.metadata) setMetadata(loaded.metadata);
     if (loaded.timelineLengthSeconds) setTotalDuration(loaded.timelineLengthSeconds);
-    if (loaded.masterSections) setMasterSections(loaded.masterSections);
-    if (loaded.tracks) {
-      setTracks(loaded.tracks);
-      pushHistorySnapshot(loaded.tracks, loaded.masterSections || masterSections);
+    if (loaded.masterBus) {
+      setMasterVolumeDb(loaded.masterBus.volumeDb);
+      setIsMasterMuted(loaded.masterBus.isMuted);
     }
+    if (loaded.loopRegion) setLoopRegion(loaded.loopRegion);
+
+    const nextSections = loaded.masterSections ?? masterSectionsRef.current;
+    const nextTracks = loaded.tracks ?? tracksRef.current;
+
+    masterSectionsRef.current = nextSections;
+    setMasterSections(nextSections);
+    tracksRef.current = nextTracks;
+    setTracks(nextTracks);
+
+    // A loaded project is a new baseline, not another step on the old timeline.
+    resetHistory(nextTracks, nextSections);
+    setSelectedClipId(null);
   };
 
   return (
@@ -985,6 +1166,7 @@ export default function App() {
             setActiveTab('clip');
           }}
           onUpdateClip={handleUpdateClip}
+          onCommitClipEdit={handleCommitClipEdit}
           onAddClipToTrack={handleAddClipToTrack}
           onDeleteClip={handleDeleteClip}
           onSplitClipAtPlayhead={handleSplitSelectedClip}
@@ -994,6 +1176,8 @@ export default function App() {
           onZoomChange={setZoom}
           onScrubTime={handleScrubTime}
           isLooping={isLooping}
+          loopRegion={loopRegion}
+          onUpdateLoopRegion={setLoopRegion}
           snapToGrid={snapToGrid}
           gridSnapSize={gridSnapSize}
           onImportAudioFile={handleImportAudioFile}
@@ -1006,10 +1190,8 @@ export default function App() {
           isMasterMuted={isMasterMuted}
           onToggleMasterMute={() => setIsMasterMuted(!isMasterMuted)}
           masterSections={masterSections}
-          onUpdateSections={(sections) => {
-            setMasterSections(sections);
-            pushHistorySnapshot(tracks, sections);
-          }}
+          onUpdateSections={(sections) => updateMasterSections(sections, false)}
+          onCommitSections={(sections) => updateMasterSections(sections, true)}
           onOpenMediaPool={() => {
             setIsStudioDockVisible(true);
             setActiveTab('files');
@@ -1041,7 +1223,7 @@ export default function App() {
             onUndo={handleUndo}
             onRedo={handleRedo}
             canUndo={historyIndex > 0}
-            canRedo={historyIndex < history.length - 1}
+            canRedo={historyIndex >= 0 && historyIndex < history.length - 1}
             trackCount={tracks.length}
             clipCount={tracks.reduce((acc, t) => acc + t.clips.length, 0)}
             totalDuration={totalDuration}
@@ -1234,7 +1416,8 @@ export default function App() {
         metadata={metadata}
         onUpdateMetadata={(updated) => setMetadata((prev) => ({ ...prev, ...updated }))}
         masterSections={masterSections}
-        onUpdateSections={setMasterSections}
+        onUpdateSections={(sections) => updateMasterSections(sections, true)}
+        masterBus={{ volumeDb: masterVolumeDb, isMuted: isMasterMuted }}
       />
     </div>
   );
