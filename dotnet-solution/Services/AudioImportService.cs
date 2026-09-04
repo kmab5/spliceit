@@ -103,8 +103,8 @@ public sealed class AudioImportService
                 "Windows-only. Cross-platform decode arrives with FFmpeg in Phase 3.");
         }
 
-        // Safe to call repeatedly; refcounted internally.
-        MediaFoundationApi.Startup();
+        // MediaFoundationReader's constructor calls MediaFoundationApi.Startup()
+        // internally, so no explicit initialisation is needed here.
         return new MediaFoundationReader(filePath);
     }
 

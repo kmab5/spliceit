@@ -11,6 +11,20 @@
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <SupportedOSPlatformVersion>7.0</SupportedOSPlatformVersion>
+    <!--
+      Required to build/publish this Windows-targeted project from Linux or
+      macOS (e.g. a GitHub Codespace). Without it the SDK cannot resolve the
+      Microsoft.WindowsDesktop.App framework references and fails with:
+
+        NETSDK1073: The FrameworkReference
+        'Microsoft.WindowsDesktop.App.WindowsForms' was not recognized
+
+      The WinForms reference arrives transitively via NAudio.WinMM (the legacy
+      WaveIn/WaveOut APIs use window-message callbacks). We drive audio through
+      WASAPI and never touch WinMM, but the NAudio metapackage includes it.
+      This property makes the SDK fetch the targeting packs from NuGet.
+    -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <RootNamespace>SpliceIt</RootNamespace>
     <AssemblyName>SpliceIt</AssemblyName>

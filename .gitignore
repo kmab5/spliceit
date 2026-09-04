@@ -12,6 +12,7 @@ bin/
 obj/
 out/
 dist/
+publish/
 *.zip
 
 # .NET & MSBuild cache
@@ -42,3 +43,5 @@ desktop.ini
 .env
 .env.local
 *.local
+
+!LOG.md

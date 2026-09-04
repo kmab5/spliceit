@@ -1,125 +1,228 @@
 # SpliceIt — Change Log
 
-## Turn 1 — React spec-bug pass
-
-**Goal:** fix the logic bugs in the React app that define correct behaviour for *both* apps, before porting anything to Avalonia/C#. Codec-level bugs (FLAC bit-packing, fake OGG, malformed ID3 `COMM`) are deliberately **not** touched — the C# app will use TagLibSharp + FFmpeg for those, so fixing the JS encoders now would be thrown-away work. Those move to the separate web repo.
-
-**Verification:** `tsc --noEmit` clean, `vite build` clean (1699 modules, no errors).
-**Scope:** 9 files, +763 / −306.
-
 ---
 
-### 1. Undo/redo was structurally broken
-
-Three separate defects, all fixed:
-
-- **Impure state updaters.** `pushHistorySnapshot` was called *inside* `setTracks(prev => {...})` updaters. React requires updaters to be pure; under `StrictMode` (which `main.tsx` enables) they are deliberately invoked twice, so every edit could push two history entries. Replaced with `applyTrackEdit`, which derives the next state from a ref, applies it, then records exactly one snapshot from the event handler.
-- **Shared references.** History entries stored the *same* track/clip objects as live state. Because several handlers also mutated in place, undoing could restore an object that had already been changed. Added `cloneTracks` / `cloneSections`. `AudioBuffer` and `peaks` are intentionally shared by reference — they are immutable in practice and cloning decoded audio per edit would be ruinous.
-- **Index drift.** `setHistoryIndex(prev => Math.min(29, prev + 1))` against an array trimmed with `.slice(-30)` desynced the cursor from the array. Now `historyRef` / `historyIndexRef` are updated together, index is always `array.length - 1`.
-
-Also removed the `setTimeout(..., 50)` re-entrancy guard in undo/redo, which is unnecessary now that pushes no longer happen inside updaters.
-
-**New API:**
-- `applyTrackEdit(mutator)` — structural edit, records one undo step
-- `applyTransientTrackEdit(mutator)` — drag/fader scrub, no undo step
-- `handleCommitClipEdit()` — called on gesture end so a whole drag is one undo step
-- `resetHistory(tracks, sections)` — new baseline on demo load / project open
-
-`AudioClipItem` now tracks `didMoveRef` so a bare click (selection) doesn't push a redundant entry; `MasterTimetrack` does the same for section drags via `latestSectionsRef`.
-
-### 2. In-place state mutation
-
-`handleUpdateClip`, `handleSplitSelectedClip` and others did `track.clips = ...` and `.clips.push(...)` on objects reachable from current state, after only a shallow array copy. Every track/clip handler rewritten immutably. Added `reindexTracks` to re-derive `clip.trackIndex` after any structural change (previously reindexing happened only in `handleInsertTrack`, so other paths left stale indices behind).
-
-### 3. Playback clock stale closures
-
-The transport effect depended on `[isPlaying, isLooping, totalDuration]` and `tick` closed over `isPlaying`, which was always `true` at schedule time — the guard `if (isPlaying)` inside `tick` could never be false, so the loop relied on the cleanup function to stop. `tracks` and `currentTime` were missing from deps, so newly added clips never played and toggling loop restarted the transport.
-
-Rewritten to depend on `isPlaying` alone, with every other value read from a live ref (`isPlayingRef`, `isLoopingRef`, `currentTimeRef`, `totalDurationRef`, `loopRegionRef`, `tracksRef`). Editing clips or toggling loop mid-playback no longer restarts anything.
-
-`handleScrubTime` now anchors the clock *before* rescheduling sources, so the first tick after a scrub can't read a start time that predates the new sources. `handleTogglePlay` primes the AudioContext from inside the user gesture so browsers reliably resume a suspended context.
-
-### 4. Hardcoded loop region
-
-Loop was pinned to `0–8.0s` inside the transport clock, with `TimelineRuler` drawing a decorative `loopStart`/`loopEnd` overlay that nothing wrote to. Added real `loopRegion` state, draggable edge handles on the ruler, and persistence in `.siq`.
-
-### 5. Colliding IDs
-
-`id: \`clip-${Date.now()}\`` collides whenever two items are created in the same millisecond — duplicating a multi-clip track produced clips sharing an ID, which breaks React keys, selection and deletion. The existing `generateUniqueId` helper (timestamp + counter + random, previously imported nowhere) is now used everywhere. `dspEngine` had the same bug in its active-source map keys, which silently dropped sources from the stop list and leaked audio past stop; replaced with a monotonic counter.
-
-### 6. Stereo width was not stereo width
-
-`dspEngine` declared `msSplitter` / `msMerger` / `midGain` and never connected them — the actual chain was `mbSummer → sideGain → limiter`, a single gain node in series. The "M/S Width" slider was a master volume control. `mixdownExporter` had the identical fake.
-
-Both now implement a real matrix:
+# Turn 5 — Build fix: `CS0103 MediaFoundationApi`
 
 ```
-Mid = (L + R) * 0.5      Side = (L - R) * 0.5
-L'  = Mid + Side * W     R'   = Mid - Side * W
+error CS0103: The name 'MediaFoundationApi' does not exist in the current context
+  Services/AudioImportService.cs(107,9)
 ```
 
-built from a `ChannelSplitter`, half-gain taps (one at `-0.5` for the difference), a width gain on the side component only, and a `ChannelMerger`. `W=0` is true mono, `W=1` unity, `W=2` wide. The old clamp of `0.1–1.5` made both ends of the UI range unreachable and is now `0–2.0`.
+### Cause
 
-### 7. Multiband mid band summed the full spectrum
+`MediaFoundationApi` lives in the `NAudio.MediaFoundation` namespace, which the file didn't import. `MediaFoundationReader` resolved fine because it's in `NAudio.Wave`, already imported — so the assembly reference was correct, only the namespace was missing.
 
-The mid band was a `peaking` filter at 1 kHz / Q 0.5 — which passes *everything*. Summed against the low and high bands, the signal was counted roughly three times (~+9 dB, very muddy). Replaced with a real band: highpass at the low crossover into a lowpass at the high one, both now tracking `lowCrossoverHz` / `highCrossoverHz` from settings.
+### Fix
 
-### 8. Master fader never reached the audio
+Removed the call rather than adding the `using`. `MediaFoundationReader`'s constructor calls `MediaFoundationApi.Startup()` internally, so the explicit initialisation was redundant. Deleting it is functionally identical and avoids betting on another namespace I can't verify from here.
 
-`masterVolumeDb` and `isMasterMuted` were React state, rendered in the UI, and used by nothing. Added `dspEngine.setMasterOutput(db, muted)` plus a master fader stage in the offline renderer, so exports now match what was auditioned. Both persist in `.siq`.
+### Risk-list update
 
-### 9. `ExportModal` crashed React
+That was #2 on Turn 3's predicted-failure list. Still outstanding, in order of likelihood:
 
-Two `<input ... ></input>` elements. `input` is a void element; React throws *"input is a void element tag and must not have children"* on render. Both made self-closing.
+1. `MultiplexingSampleProvider` constructor shape — only reached by files with more than 2 channels
+2. `WasapiOut` overload `(AudioClientShareMode, bool useEventSync, int latency)` — this is a *runtime* path, so a clean build doesn't clear it; it fails on first Play
+3. `AiffFileReader` availability in the metapackage
+4. `[property: JsonIgnore]` on `[ObservableProperty]` fields
+5. `SupportedOSPlatformVersion 7.0` possibly needing `10.0.17763.0`
 
-### 10. Ruler / timeline width mismatch
+Items 1–4 are compile-time and will surface on this build. Item 2 won't.
 
-`TimelineRuler` and `MasterTimetrack` used `Math.max(1200, duration * zoom)` while `ArrangementView`'s clip canvas used `Math.max(800, ...)`. Below ~14s at default zoom the ruler was wider than the lanes and every tick was misaligned with the clips it labelled. All three now use `800`.
+---
+---
 
-### 11. Smaller fixes
+# Turn 4 — Codespaces build fix (`NETSDK1073`)
 
-- `stopAll` used two hard `setValueAtTime` steps (`0` then `1`), which produced the very click it was meant to prevent. Now short linear ramps.
-- Clip scheduling had no guard against zero/negative durations or a `clipOffset` past the end of the source buffer — both throw in `source.start()`.
-- `handleDuplicateSelectedClip` offset the copy by `+0.5s` with no collision check, so it could land on top of a neighbour. Now uses `findNextAvailableSlot`, consistent with paste and pool-insert.
-- Keyboard handler now also ignores `<select>` and `contentEditable` targets, and `S` no longer fires while `Ctrl`/`Cmd` is held (it was stealing Ctrl+S).
-- Project load resets history to a clean baseline instead of appending to the previous session's stack.
-- Removed unused `Play` import in `ArrangementView`.
+**One-line change.** `dotnet publish -r win-x64` failed on Linux with:
+
+```
+error NETSDK1073: The FrameworkReference
+'Microsoft.WindowsDesktop.App.WindowsForms' was not recognized
+```
+
+### Cause
+
+The `NAudio` metapackage pulls in `NAudio.WinMM`, whose `net*-windows` target references WinForms — the legacy WaveIn/WaveOut APIs use window-message callbacks. We drive audio through WASAPI and never touch WinMM, but the metapackage brings it along regardless. A Linux SDK has no Windows Desktop targeting packs installed, so the reference can't resolve.
+
+### Fix
+
+Added to `SpliceIt.csproj`:
+
+```xml
+<EnableWindowsTargeting>true</EnableWindowsTargeting>
+```
+
+This is the SDK's documented switch for building Windows-targeted projects from a non-Windows host — it fetches the targeting packs from NuGet instead of expecting them locally.
+
+### Also: publish the project, not the solution
+
+`NETSDK1194` warns that `--output` isn't supported when building a solution. Since Turn 2 added `SpliceIt.sln`, a bare `dotnet publish` now resolves the solution instead of the project. Name the `.csproj`:
+
+```bash
+cd dotnet-solution
+dotnet publish SpliceIt.csproj -c Release -r win-x64 \
+  --self-contained true \
+  -p:PublishSingleFile=true \
+  -p:IncludeNativeLibrariesForSelfExtract=true \
+  -o publish/win-x64
+```
+
+`dotnet build` (no `-o`) is still fine against the solution.
+
+### Expect a larger binary
+
+Self-contained now bundles the Windows Desktop runtime alongside the base runtime, so the output grows to roughly 150–170 MB. Nothing is wrong — it's the transitive WinForms reference.
+
+If that becomes annoying, the clean fix is to drop the `NAudio` metapackage and reference only the sub-packages we actually use, eliminating WinMM. I'd rather do that once the build is confirmed green than change two variables at once.
+
+---
+---
+
+# Turn 3 — Avalonia/C# Phase 1: the foundation
+
+**Goal:** make audio real. Decode files, play them, draw them, and export them. Everything Phase 2's UI port depends on but cannot be verified without.
+
+> ### ⚠️ Not compile-verified
+> Still no .NET SDK in this container and `nuget.org` remains outside its egress list. Validated: XML well-formedness of all `.axaml` / `.csproj` / manifest files, brace/paren/bracket balance across all 23 `.cs` files, namespace consistency, and a sweep confirming no synthetic tone remains anywhere.
+>
+> **This turn carries more risk than Phase 0** — it adds nine new files touching NAudio APIs I could not check against real assemblies. Please `dotnet build` and send errors verbatim.
+
+**Scope:** 9 files added, 6 modified.
 
 ---
 
-## Known / deliberately deferred
+## The headline: the 220 Hz sine tone is gone
 
-- **Codec correctness** — FLAC frame headers look wrong (blocksize code `0x70` declares an 8-bit trailing value but 16 bits are written; sample-size bits suspect), OGG export is a FLAC stream with a relabelled MIME type, ID3 `COMM` frames omit the required language + short-description fields. Deferred to the web repo; the C# app will use TagLibSharp + FFmpeg.
-- **Track fader / pan drags** are transient and produce no undo entry (clip drags and section drags now do). Wiring `onCommitEdit` through `TrackHeader` is a small follow-up.
-- **`src/data/dotnetSourceCode.ts`** — a third copy of the C# source embedded as template strings, already drifted from `dotnet-solution/` (missing `App.axaml`, `Program.cs`, `App.axaml.cs`). Untouched this turn; slated for deletion.
-- Bundle is 709 kB unsplit. Not a correctness issue.
-
----
-
-## Next turn — Avalonia/C# Phase 0 (make it compile and run)
-
-1. **Compiled-binding failures.** `AvaloniaUseCompiledBindingsByDefault=true` + `x:DataType="vm:MainViewModel"` on the Window, but nested `DataTemplate`s bind `Name` / `VolumeDb` / `Clips` with no `x:DataType` of their own — they resolve against `MainViewModel`, which has none of those members. Add `x:DataType="models:AudioTrack"` and `models:AudioClip`.
-2. **`Converter={x:Null}`** in the Play button binding — remove; add a real bool→string converter so the label actually toggles.
-3. **Package set.** Drop `NAudio.WaveFormRenderer` (GDI+ `System.Drawing.Bitmap`, cannot compose with Avalonia) and unused `MathNet.Filtering`. Swap `NAudio.Core` → full `NAudio` for `WasapiOut` + `MediaFoundationReader`; add `NAudio.Vorbis` and `NAudio.Flac` for decode. FFmpeg (`FFMpegCore`) arrives in Phase 3 for encoding.
-4. **Observable DSP models.** `DspSettings` and its nested configs are plain POCOs, so slider edits never notify and `MasteringChain.UpdateFilters()` is never re-called.
-5. **Add a `.sln`.**
-6. **Wire the dead Mute/Solo buttons** (no `Command` at all today).
-
-Phase 0 is deliberately surgical — no new features, just getting a window on screen that doesn't lie about what it does.
-
-### Then, in order
-
-- **Phase 1** — file dialogs (`IStorageProvider`), audio import/decode service, peak extraction, a custom Avalonia waveform `Control`, real playback engine + transport clock.
-- **Phase 2** — port the UI: transport bar, ruler, track headers, draggable/trimmable clips, master timetrack, context menus, right sidebar, bottom dock, export dialog. Design tokens (`#0F0F10`, `#1A1A1C`, `#2D2D2F`, `#4FC3F7`, `#8E9299`, `#E0E0E0`, `#F27D26`, `#00FFA3`, `#FF4444`) go into an Avalonia resource dictionary first.
-- **Phase 3** — port the logic corrected above: undo/redo, clipboard, collision math, `.siq` round-trip, multi-format encode, metadata + cue chunks.
-- **Phase 4** — Concat mode, reached from a **mode switcher in the top bar**, writing into the same track/clip model so a project opens in either mode without conversion.
-
-### Also worth noting
-
-`AudioExportService.cs` line ~85 currently reads:
+`AudioExportService.cs` previously contained:
 
 ```csharp
 float sourceSample = MathF.Sin(2.0f * MathF.PI * 220.0f * (float)currentTimelineSec) * 0.2f;
 ```
 
-Every C# export is a 220 Hz sine tone. There is no audio decoding anywhere in the C# project. This is Phase 1 work, not Phase 0 — it needs the import service to exist first.
+Every export was a sine tone regardless of the project, because there was no audio decoding anywhere in the C# app. Export now pulls from `TimelineMixerSampleProvider` — the same component that feeds realtime playback, so a render cannot drift from what was auditioned.
+
+---
+
+## New files
+
+### `Services/AudioImportService.cs`
+Decodes to interleaved stereo float at the engine rate (48 kHz). Decoder selection:
+
+| Extension | Reader | Why |
+|---|---|---|
+| `.wav` | `WaveFileReader` | Native, avoids Media Foundation quirks |
+| `.aiff` / `.aif` | `AiffFileReader` | Native |
+| `.ogg` | `VorbisWaveReader` | Media Foundation cannot read Vorbis |
+| everything else | `MediaFoundationReader` | MP3, AAC/M4A, WMA, and FLAC on Win10+ |
+
+Mono is widened via `MonoToStereoSampleProvider`; >2 channels keep the first two through a `MultiplexingSampleProvider` rather than guessing a surround downmix without channel-mask info. Resampling uses `WdlResamplingSampleProvider` — pure managed, no native dependency.
+
+### `Models/AudioSampleData.cs` + `Services/AudioSampleCache.cs`
+Decoded audio is stored once per absolute path and referenced by clips, so twenty clips over one file decode once. It's also why `.siq` stays small — only paths are serialised.
+
+### `Services/PeakExtractionService.cs`
+Max-absolute-amplitude bins across both channels, mirroring `extractPeaksFromBuffer` in the React app so both front-ends draw the same shape.
+
+### `Audio/TimelineMixerSampleProvider.cs`
+The core. Composites every clip with gain, fade envelopes (Linear / Exponential / EqualPower, matching `AudioClip.CalculateEnvelopeGain`), track volume and equal-power pan. Solo overrides mute. Handles loop regions at block boundaries. Master gain applied last.
+
+Guards that matter: clips with no decoded audio are **skipped**, not faked; `clipOffset` past the source end is rejected; durations are clamped to available frames.
+
+### `Audio/AudioPlaybackEngine.cs`
+`WasapiOut` in shared mode with event sync. `Seek` moves the playhead without tearing down the device. `PlaybackStopped` is detached before teardown so disposal doesn't re-enter the handler.
+
+### `Controls/WaveformView.cs`
+Custom `Control` overriding `Render(DrawingContext)`. This is what replaces `NAudio.WaveFormRenderer`, which was referenced but unusable — it renders to `System.Drawing.Bitmap` (GDI+) and cannot compose with Avalonia. Honours `ClipOffset`/`ClipDuration` against `SourceDuration`, so a trimmed clip shows the correct slice instead of the whole file squashed to fit.
+
+### `Services/IFilePickerService.cs` + `AvaloniaFilePickerService.cs`
+`IStorageProvider` behind an interface so the view model opens dialogs without referencing a window. `TopLevel` is resolved lazily — the window isn't attached to a visual root at construction time.
+
+---
+
+## Modified
+
+**`SpliceIt.csproj`** — TFM `net9.0` → `net9.0-windows`, required for NAudio's Media Foundation and WASAPI assets. **This still cross-compiles from Codespaces**: only WPF and WinForms need a Windows build host, not Avalonia.
+
+**`Models/AudioClip.cs`** — added `Peaks` and `HasAudio`, both `[property: JsonIgnore]` since they're derived.
+
+**`ViewModels/MainViewModel.cs`** — rewritten. Import/open/save/export commands with real dialogs, a `DispatcherTimer` transport clock driving the playhead, master volume and loop pushed into the engine via `partial void On...Changed` hooks, and `IDisposable` for engine teardown.
+
+The three fake demo tracks are gone. They held clips pointing at no file; now that audio is real, inventing silent placeholders would just be lying in a new way. Sessions start with one empty track.
+
+**`App.axaml.cs`** — constructs the picker and injects it. `MainViewModel` keeps a parameterless constructor for `Design.DataContext`.
+
+**`Views/MainWindow.axaml`** — Import / Open / Save buttons, loop toggle, live playhead readout, `WaveformView` in the clip template, a `NO AUDIO` badge for clips whose source is missing, and an indeterminate progress bar during decode.
+
+**`Services/AudioExportService.cs`** — rewritten against the mixer. Temp files are cleaned up in a `finally` even on cancellation, and a tagging failure no longer discards a good render.
+
+---
+
+## Where the risk is
+
+Ranked by how likely I think a build error is:
+
+1. **`MultiplexingSampleProvider` constructor shape** in `AudioImportService.NormaliseToStereo`. Only hit by >2-channel files.
+2. **`WasapiOut` constructor overload** — I used `(AudioClientShareMode, bool useEventSync, int latency)`.
+3. **`AiffFileReader` availability** in the NAudio metapackage.
+4. **`[property: JsonIgnore]` on `[ObservableProperty]` fields** — correct syntax as of Toolkit 8.x, but worth confirming.
+5. **`SupportedOSPlatformVersion 7.0`** may need to be `10.0.17763.0` for Media Foundation.
+
+All five are local fixes, not design problems.
+
+---
+
+## What to test on Windows
+
+1. **Import** a WAV and an MP3 → tracks appear with real waveforms at real widths
+2. **Play** → you hear it; playhead readout advances
+3. **Loop** → toggle mid-playback, it wraps at the loop end
+4. **Split** with the playhead inside a clip → two clips, waveforms show different slices
+5. **Export** → pick a path, and **the file is your actual audio**, not a sine tone
+6. **Save** then **Open** the `.siq` → clips return with waveforms intact (audio is re-decoded from stored paths)
+7. **Move a source file, then reopen** → clip shows `NO AUDIO` instead of silently producing silence
+
+---
+
+## Next turn — Phase 2: the UI port
+
+Design tokens into an Avalonia `ResourceDictionary` first (`#0F0F10`, `#1A1A1C`, `#2D2D2F`, `#4FC3F7`, `#8E9299`, `#E0E0E0`, `#F27D26`, `#00FFA3`, `#FF4444`), then: timeline ruler with scrub, draggable playhead, clip drag + trim handles with the collision math from `clipCollision.ts`, zoom (replacing `SecondsToPixelsConverter`'s fixed scale with a `MultiBinding` against `ZoomFactor`), track headers with fader/pan/mute/solo/reorder, master timetrack with sections, right tools sidebar, bottom dock tabs, media pool, and the export dialog.
+
+Then **Phase 3** (undo/redo, clipboard, `.siq` round-trip hardening, FFmpeg multi-format encode, metadata + cue chunks, plus mirroring Turn 1's multiband and mid/side fixes into `MasteringChain.cs`, which still ignores `DspSettings.Multiband` entirely) and **Phase 4** (Concat mode behind a top-bar mode switcher).
+
+---
+---
+
+# Turn 2 — Avalonia/C# Phase 0: make it compile and run
+
+**Build confirmed working by user** on .NET SDK 10.0.200 targeting net9.0.
+
+1. **Compiled-binding failures — the build-breaker.** `AvaloniaUseCompiledBindingsByDefault=true` plus `x:DataType="vm:MainViewModel"` meant nested `DataTemplate` bindings to `Name`/`VolumeDb`/`Clips` resolved against `MainViewModel`, which has none of them. Added `x:DataType` to both templates.
+2. **Play button could never change** — `Converter={x:Null}` is meaningless and the format string had no placeholder. Replaced with two `TextBlock`s driven by `{Binding IsPlaying}` / `{Binding !IsPlaying}`.
+3. **Package set couldn't do the job** — `NAudio.Core` has no output device (`WasapiOut` lives in full `NAudio`) and can't decode MP3/AAC/FLAC. Swapped to full `NAudio` + `NAudio.Vorbis`. Dropped `NAudio.WaveFormRenderer` (GDI+, can't compose with Avalonia) and `MathNet.Filtering` (unreferenced).
+4. **DSP and metadata models weren't observable** — POCOs bound two-way, so nothing could react to a change. All converted to `ObservableObject`.
+5. **Mute/Solo were decorative** — no `Command`, no binding. Now `ToggleButton`s bound to the model with checked-state styling.
+6. **Clips rendered at `Canvas.Left="10" Width="320"`** regardless of real coordinates. Added `SecondsToPixelsConverter` at a fixed 80 px/s.
+7. **Added `SpliceIt.sln`** — there was none.
+8. Export command guarded against re-entry; dB readouts under sliders; removed unused `using SpliceIt.DSP;` and `_metadataService` field; `Border` + `ClipToBounds` instead of a stray `Canvas`.
+
+---
+---
+
+# Turn 1 — React spec-bug pass
+
+Fixed the logic bugs that define correct behaviour for *both* apps, before porting. **Verified:** `tsc --noEmit` clean, `vite build` clean. **Scope:** 9 files, +763 / −306.
+
+1. **Undo/redo broken three ways.** `pushHistorySnapshot` called inside `setTracks` updaters — impure, double-invoked under `StrictMode`. History entries shared references with live state. Index math (`Math.min(29, prev+1)` vs `.slice(-30)`) drifted. Replaced with `applyTrackEdit` / `applyTransientTrackEdit` / `handleCommitClipEdit` plus structural cloning.
+2. **In-place mutation** — `track.clips = ...` and `.clips.push(...)` on live state. All handlers rewritten immutably; added `reindexTracks`.
+3. **Playback clock stale closures** — `tick` closed over an always-true `isPlaying`; `tracks`/`currentTime` missing from deps so new clips never played.
+4. **Hardcoded 0–8s loop** → real `loopRegion` state with draggable ruler handles.
+5. **Colliding `Date.now()` IDs** → the unused `generateUniqueId`. Same bug in `dspEngine`'s source map leaked audio past stop.
+6. **Stereo width was a volume knob** — `msSplitter`/`msMerger`/`midGain` declared and never connected. Both engines now use a real M/S matrix; full 0–200% range (old clamp was 0.1–1.5).
+7. **Multiband mid band passed the full spectrum** (a wide `peaking` filter) — signal summed ~3×, roughly +9 dB and muddy. Now a real highpass→lowpass band.
+8. **Master fader reached nothing** — added `setMasterOutput()` and a master stage in the offline render.
+9. **`ExportModal` crashed React** — two `<input></input>` void elements.
+10. **Ruler/lane width mismatch** — `max(1200,…)` vs `max(800,…)`.
+11. Click-free `stopAll`; zero-length and out-of-bounds scheduling guards; collision-safe duplicate placement; keyboard handler no longer steals Ctrl+S.
+
+**Deferred to the web repo:** FLAC frame-header bit-packing, the "OGG" that is a relabelled FLAC stream, ID3 `COMM` frames missing language + short-description fields, track fader/pan drags producing no undo entry, and deleting `src/data/dotnetSourceCode.ts`.
