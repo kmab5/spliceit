@@ -3,31 +3,66 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace SpliceIt.Models;
 
-public class AudioMetadata
+// NOTE (Phase 0): was a plain POCO while being bound two-way from the Metadata
+// Inspector tab. Now observable so the UI stays in sync with the model.
+public partial class AudioMetadata : ObservableObject
 {
     // TagLibSharp Basic Tags
-    public string Title { get; set; } = "Untitled Composition";
-    public string Artist { get; set; } = "SpliceIt Artist";
-    public string Album { get; set; } = "Mastered Mixdown";
-    public uint Year { get; set; } = (uint)DateTime.UtcNow.Year;
-    public uint TrackNumber { get; set; } = 1;
-    public uint DiscNumber { get; set; } = 1;
-    public string Genre { get; set; } = "Electronic / Ambient";
-    public string Comment { get; set; } = "Mastered with SpliceIt Audio Workspace";
-    public string Composer { get; set; } = string.Empty;
+    [ObservableProperty]
+    private string _title = "Untitled Composition";
+
+    [ObservableProperty]
+    private string _artist = "SpliceIt Artist";
+
+    [ObservableProperty]
+    private string _album = "Mastered Mixdown";
+
+    [ObservableProperty]
+    private uint _year = (uint)DateTime.UtcNow.Year;
+
+    [ObservableProperty]
+    private uint _trackNumber = 1;
+
+    [ObservableProperty]
+    private uint _discNumber = 1;
+
+    [ObservableProperty]
+    private string _genre = "Electronic / Ambient";
+
+    [ObservableProperty]
+    private string _comment = "Mastered with SpliceIt Audio Workspace";
+
+    [ObservableProperty]
+    private string _composer = string.Empty;
 
     // Extended Broadcast & Release Tags
-    public string Isrc { get; set; } = string.Empty;
-    public double Bpm { get; set; } = 120.0;
-    public string Key { get; set; } = "C minor";
-    public string Lyrics { get; set; } = string.Empty;
-    public string Copyright { get; set; } = $"Copyright {DateTime.UtcNow.Year}";
-    public string Publisher { get; set; } = string.Empty;
-    public string Encoder { get; set; } = "SpliceIt .NET 9 Audio Engine";
-    public string? CoverArtBase64 { get; set; }
+    [ObservableProperty]
+    private string _isrc = string.Empty;
+
+    [ObservableProperty]
+    private double _bpm = 120.0;
+
+    [ObservableProperty]
+    private string _key = "C minor";
+
+    [ObservableProperty]
+    private string _lyrics = string.Empty;
+
+    [ObservableProperty]
+    private string _copyright = $"Copyright {DateTime.UtcNow.Year}";
+
+    [ObservableProperty]
+    private string _publisher = string.Empty;
+
+    [ObservableProperty]
+    private string _encoder = "SpliceIt .NET 9 Audio Engine";
+
+    [ObservableProperty]
+    private string? _coverArtBase64;
 }
 
 public class ProjectFile

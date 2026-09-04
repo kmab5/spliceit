@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace SpliceIt.Models;
 
@@ -10,57 +10,98 @@ public enum FilterType
     HighPass
 }
 
-public class ParametricBandConfig
+// NOTE (Phase 0): every config type below was a plain POCO. Sliders in
+// MainWindow.axaml bind two-way into these, so without INotifyPropertyChanged
+// the UI could write values but never reflect changes made anywhere else, and
+// nothing could observe a change in order to rebuild the filter coefficients.
+// They are now ObservableObject so the DSP chain can react to edits.
+
+public partial class ParametricBandConfig : ObservableObject
 {
-    public FilterType Type { get; set; } = FilterType.PeakingBell;
-    public double FrequencyHz { get; set; } = 320.0;
-    public double GainDb { get; set; } = -3.5;
-    public double QFactor { get; set; } = 1.414;
-    public bool Enabled { get; set; } = true;
+    [ObservableProperty]
+    private FilterType _type = FilterType.PeakingBell;
+
+    [ObservableProperty]
+    private double _frequencyHz = 320.0;
+
+    [ObservableProperty]
+    private double _gainDb = -3.5;
+
+    [ObservableProperty]
+    private double _qFactor = 1.414;
+
+    [ObservableProperty]
+    private bool _enabled = true;
 }
 
-public class MultibandBandConfig
+public partial class MultibandBandConfig : ObservableObject
 {
-    public double ThresholdDb { get; set; } = -18.0;
-    public double Ratio { get; set; } = 3.0; // 3:1
-    public double AttackMs { get; set; } = 15.0;
-    public double ReleaseMs { get; set; } = 120.0;
-    public double MakeupGainDb { get; set; } = 0.0;
+    [ObservableProperty]
+    private double _thresholdDb = -18.0;
+
+    [ObservableProperty]
+    private double _ratio = 3.0; // 3:1
+
+    [ObservableProperty]
+    private double _attackMs = 15.0;
+
+    [ObservableProperty]
+    private double _releaseMs = 120.0;
+
+    [ObservableProperty]
+    private double _makeupGainDb = 0.0;
 }
 
-public class MultibandCompressorConfig
+public partial class MultibandCompressorConfig : ObservableObject
 {
-    public bool Enabled { get; set; } = true;
-    public double LowCrossoverHz { get; set; } = 250.0;
-    public double HighCrossoverHz { get; set; } = 4000.0;
+    [ObservableProperty]
+    private bool _enabled = true;
+
+    [ObservableProperty]
+    private double _lowCrossoverHz = 250.0;
+
+    [ObservableProperty]
+    private double _highCrossoverHz = 4000.0;
+
     public MultibandBandConfig LowBand { get; set; } = new();
     public MultibandBandConfig MidBand { get; set; } = new();
     public MultibandBandConfig HighBand { get; set; } = new();
 }
 
-public class StereoImagingConfig
+public partial class StereoImagingConfig : ObservableObject
 {
-    public bool Enabled { get; set; } = true;
+    [ObservableProperty]
+    private bool _enabled = true;
+
     /// <summary>
     /// Stereo width coefficient: 0.0 = Pure Mono, 1.0 = Neutral Stereo, 2.0 = Exaggerated Wide.
     /// </summary>
-    public double WidthFactor { get; set; } = 1.0;
+    [ObservableProperty]
+    private double _widthFactor = 1.0;
 }
 
-public class TruePeakLimiterConfig
+public partial class TruePeakLimiterConfig : ObservableObject
 {
-    public bool Enabled { get; set; } = true;
-    public double CeilingDb { get; set; } = -0.3; // -0.3 dBFS True-Peak Ceiling
-    public double ReleaseMs { get; set; } = 50.0;
+    [ObservableProperty]
+    private bool _enabled = true;
+
+    [ObservableProperty]
+    private double _ceilingDb = -0.3; // -0.3 dBFS True-Peak Ceiling
+
+    [ObservableProperty]
+    private double _releaseMs = 50.0;
+
     /// <summary>
     /// Streaming and Broadcast Loudness target (e.g. -14.0 LUFS for YouTube / Spotify).
     /// </summary>
-    public double TargetLufs { get; set; } = -14.0;
+    [ObservableProperty]
+    private double _targetLufs = -14.0;
 }
 
-public class DspSettings
+public partial class DspSettings : ObservableObject
 {
-    public bool MasterBypass { get; set; } = false;
+    [ObservableProperty]
+    private bool _masterBypass = false;
 
     // Directives: Harsh high-cut (>12 kHz)
     public ParametricBandConfig HighCutBand { get; set; } = new()

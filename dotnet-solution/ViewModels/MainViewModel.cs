@@ -5,7 +5,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using SpliceIt.DSP;
 using SpliceIt.Models;
 using SpliceIt.Services;
 
@@ -14,7 +13,6 @@ namespace SpliceIt.ViewModels;
 public partial class MainViewModel : ObservableObject
 {
     private readonly AudioExportService _exportService = new();
-    private readonly TagLibMetadataService _metadataService = new();
 
     [ObservableProperty]
     private string _projectName = "SpliceIt Session";
@@ -50,8 +48,14 @@ public partial class MainViewModel : ObservableObject
     private bool _isExporting = false;
 
     public ObservableCollection<AudioTrack> Tracks { get; } = new();
-    public DspSettings DspSettings { get; set; } = new();
-    public AudioMetadata Metadata { get; set; } = new();
+
+    // Were plain auto-properties, so a project load swapped the object out and
+    // the bound controls never noticed.
+    [ObservableProperty]
+    private DspSettings _dspSettings = new();
+
+    [ObservableProperty]
+    private AudioMetadata _metadata = new();
 
     public MainViewModel()
     {
@@ -170,7 +174,7 @@ public partial class MainViewModel : ObservableObject
         StatusMessage = $"Clip split non-destructively at {playhead:F2}s";
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanExportMixdown))]
     private async Task ExportMixdownAsync()
     {
         if (IsExporting) return;
@@ -213,6 +217,16 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    private bool CanExportMixdown() => !IsExporting;
+
+    partial void OnIsExportingChanged(bool value)
+    {
+        ExportMixdownCommand.NotifyCanExecuteChanged();
+    }
+
+    // TODO (Phase 1): these still take a raw path and are bound to nothing,
+    // because the app has no file dialog yet. IStorageProvider wiring lands with
+    // the import/decode service.
     [RelayCommand]
     private void SaveProjectFile(string filePath)
     {

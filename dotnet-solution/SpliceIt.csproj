@@ -12,6 +12,11 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TieredCompilation>true</TieredCompilation>
     <ServerGarbageCollection>false</ServerGarbageCollection>
+    <!--
+      Media Foundation (used for audio decode) is Windows-only, so the RID is
+      pinned. Cross-platform decode arrives with FFmpeg in Phase 3.
+    -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,15 +27,30 @@
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.2.3" />
     <PackageReference Include="Avalonia.Diagnostics" Version="11.2.3" Condition="'$(Configuration)' == 'Debug'" />
 
-    <!-- MVVM Community Toolkit 8.3+ -->
+    <!-- MVVM Community Toolkit -->
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
 
     <!-- Audio Metadata Management (ID3v1, ID3v2, Vorbis, FLAC, MP4) -->
     <PackageReference Include="TagLibSharp" Version="2.3.0" />
 
-    <!-- Cross-Platform Audio DSP & Playback Engine -->
-    <PackageReference Include="NAudio.Core" Version="2.2.1" />
-    <PackageReference Include="NAudio.WaveFormRenderer" Version="2.0.0" />
-    <PackageReference Include="MathNet.Filtering" Version="0.7.0" />
+    <!--
+      Audio playback & decode.
+
+      Was: NAudio.Core, which contains NO output device (WasapiOut / WaveOutEvent
+      live in the full NAudio package) and cannot decode MP3/AAC/FLAC. Playback
+      and import were therefore impossible with the previous package set.
+
+      The full NAudio package brings WasapiOut plus MediaFoundationReader, which
+      decodes WAV / MP3 / AAC / WMA and — on Windows 10 and later — FLAC.
+      NAudio.Vorbis covers OGG, which Media Foundation does not handle.
+
+      Removed:
+        NAudio.WaveFormRenderer  -> renders to System.Drawing.Bitmap (GDI+),
+                                    which cannot compose with Avalonia at all.
+                                    Waveforms are drawn with DrawingContext instead.
+        MathNet.Filtering        -> never referenced anywhere in the project.
+    -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="NAudio.Vorbis" Version="1.5.0" />
   </ItemGroup>
 </Project>

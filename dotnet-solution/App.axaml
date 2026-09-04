@@ -1,9 +1,18 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:conv="using:SpliceIt.Converters"
              x:Class="SpliceIt.App"
              RequestedThemeVariant="Dark">
+
+    <Application.Resources>
+        <!-- Fixed-zoom seconds -> pixels mapping used by the clip canvas. -->
+        <conv:SecondsToPixelsConverter x:Key="SecondsToPixels" DefaultPixelsPerSecond="80" />
+        <conv:SecondsToPixelsConverter x:Key="SecondsToWidth" DefaultPixelsPerSecond="80" MinimumPixels="8" />
+    </Application.Resources>
+
     <Application.Styles>
         <FluentTheme />
+
         <!-- Custom High-Contrast Dark DAW styles -->
         <Style Selector="Button.ToolbarBtn">
             <Setter Property="Background" Value="#202020"/>
@@ -13,6 +22,33 @@
             <Setter Property="Padding" Value="10,5"/>
             <Setter Property="CornerRadius" Value="4"/>
             <Setter Property="FontSize" Value="12"/>
+        </Style>
+
+        <!-- Mute / Solo channel-strip toggles. These were plain Buttons with no
+             Command at all, so they were purely decorative. -->
+        <Style Selector="ToggleButton.ChannelToggle">
+            <Setter Property="Background" Value="#202020"/>
+            <Setter Property="Foreground" Value="#8E9299"/>
+            <Setter Property="BorderBrush" Value="#333333"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="0,3"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        </Style>
+
+        <Style Selector="ToggleButton.ChannelToggle.Mute:checked">
+            <Setter Property="Background" Value="#F27D26"/>
+            <Setter Property="Foreground" Value="#0F0F10"/>
+            <Setter Property="BorderBrush" Value="#F27D26"/>
+        </Style>
+
+        <Style Selector="ToggleButton.ChannelToggle.Solo:checked">
+            <Setter Property="Background" Value="#FF4444"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#FF4444"/>
         </Style>
     </Application.Styles>
 </Application>

@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:SpliceIt.ViewModels"
+        xmlns:models="using:SpliceIt.Models"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="1280" d:DesignHeight="800"
@@ -24,7 +25,7 @@
                 <!-- Project Name & Branding -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <TextBlock Text="SPLICEIT" FontWeight="ExtraBold" FontSize="14" Foreground="#00D2FF" VerticalAlignment="Center"/>
-                    <Border Background="#242424" CornerRadius="3" Padding="6,2">
+                    <Border Background="#242424" CornerRadius="3" Padding="6,2" VerticalAlignment="Center">
                         <TextBlock Text=".siq" FontSize="10" FontFamily="Consolas" Foreground="#AAAAAA"/>
                     </Border>
                     <TextBox Text="{Binding ProjectName}" Width="160" Background="#202020" BorderBrush="#333333" Foreground="White" Margin="8,0,0,0"/>
@@ -35,9 +36,22 @@
                     <Button Classes="ToolbarBtn" Command="{Binding StopCommand}">
                         <TextBlock Text="■ Stop"/>
                     </Button>
-                    <Button Classes="ToolbarBtn" Command="{Binding TogglePlayCommand}" Background="#00D2FF" Foreground="#000000" FontWeight="Bold">
-                        <TextBlock Text="{Binding IsPlaying, Converter={x:Null}, StringFormat='▶ Play'}"/>
+
+                    <!--
+                        The label was previously bound as
+                          {Binding IsPlaying, Converter={x:Null}, StringFormat='▶ Play'}
+                        An explicitly null Converter is meaningless and the text could
+                        never change. Two mutually exclusive TextBlocks driven by the
+                        bool (and its negation) are simpler than a converter.
+                    -->
+                    <Button Classes="ToolbarBtn" Command="{Binding TogglePlayCommand}"
+                            Background="#00D2FF" Foreground="#000000" FontWeight="Bold">
+                        <Panel>
+                            <TextBlock Text="▶ Play" IsVisible="{Binding !IsPlaying}"/>
+                            <TextBlock Text="❚❚ Pause" IsVisible="{Binding IsPlaying}"/>
+                        </Panel>
                     </Button>
+
                     <Button Classes="ToolbarBtn" Command="{Binding SplitClipAtPlayheadCommand}" ToolTip.Tip="Split Selected Clip at Playhead (S)">
                         <TextBlock Text="✂ Split (S)"/>
                     </Button>
@@ -45,7 +59,9 @@
 
                 <!-- Export & Save Actions -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                    <Button Classes="ToolbarBtn" Command="{Binding ExportMixdownCommand}" Background="#00FFA3" Foreground="#000000" FontWeight="Bold">
+                    <Button Classes="ToolbarBtn" Command="{Binding ExportMixdownCommand}"
+                            IsEnabled="{Binding !IsExporting}"
+                            Background="#00FFA3" Foreground="#000000" FontWeight="Bold">
                         <TextBlock Text="⚡ Export Mixdown (.WAV)"/>
                     </Button>
                 </StackPanel>
@@ -56,7 +72,14 @@
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding Tracks}">
                 <ItemsControl.ItemTemplate>
-                    <DataTemplate>
+                    <!--
+                        x:DataType is REQUIRED here. With
+                        AvaloniaUseCompiledBindingsByDefault=true, a DataTemplate with
+                        no x:DataType resolves its bindings against the Window's
+                        x:DataType (MainViewModel), which has no Name / VolumeDb /
+                        Clips members. That failed to compile.
+                    -->
+                    <DataTemplate x:DataType="models:AudioTrack">
                         <!-- Track Lane -->
                         <Border Height="96" Background="#1A1A1A" BorderBrush="#252525" BorderThickness="0,0,0,1">
                             <Grid ColumnDefinitions="220,*">
@@ -65,15 +88,25 @@
                                     <StackPanel Spacing="4">
                                         <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="12" Foreground="White"/>
                                         <Grid ColumnDefinitions="*,*">
-                                            <Button Grid.Column="0" Content="Mute" Classes="ToolbarBtn" Margin="0,0,2,0"/>
-                                            <Button Grid.Column="1" Content="Solo" Classes="ToolbarBtn" Margin="2,0,0,0"/>
+                                            <!-- Bound directly to the model rather than left inert. -->
+                                            <ToggleButton Grid.Column="0" Content="Mute"
+                                                          Classes="ChannelToggle Mute"
+                                                          IsChecked="{Binding IsMuted}"
+                                                          ToolTip.Tip="Mute this track"
+                                                          Margin="0,0,2,0"/>
+                                            <ToggleButton Grid.Column="1" Content="Solo"
+                                                          Classes="ChannelToggle Solo"
+                                                          IsChecked="{Binding IsSoloed}"
+                                                          ToolTip.Tip="Solo this track"
+                                                          Margin="2,0,0,0"/>
                                         </Grid>
-                                        <Slider Minimum="-36" Maximum="6" Value="{Binding VolumeDb}" Margin="0,4,0,0"/>
+                                        <Slider Minimum="-36" Maximum="6" Value="{Binding VolumeDb}"
+                                                ToolTip.Tip="Track volume (dB)" Margin="0,4,0,0"/>
                                     </StackPanel>
                                 </Border>
 
                                 <!-- Clip Canvas -->
-                                <Canvas Grid.Column="1" Background="#141414">
+                                <Border Grid.Column="1" Background="#141414" ClipToBounds="True">
                                     <ItemsControl ItemsSource="{Binding Clips}">
                                         <ItemsControl.ItemsPanel>
                                             <ItemsPanelTemplate>
@@ -81,16 +114,25 @@
                                             </ItemsPanelTemplate>
                                         </ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <!-- Audio Clip Graphic -->
-                                                <Border Canvas.Left="10" Canvas.Top="4" Width="320" Height="86"
-                                                        Background="#202A36" BorderBrush="#00D2FF" BorderThickness="1.5" CornerRadius="4">
-                                                    <TextBlock Text="{Binding Name}" Foreground="White" FontSize="11" Margin="6,4"/>
+                                            <DataTemplate x:DataType="models:AudioClip">
+                                                <!--
+                                                    Position and width now derive from the clip's
+                                                    real timeline coordinates instead of the
+                                                    previous hardcoded Left="10" Width="320".
+                                                -->
+                                                <Border Canvas.Left="{Binding TimelineStartSeconds, Converter={StaticResource SecondsToPixels}}"
+                                                        Canvas.Top="4"
+                                                        Width="{Binding ClipDurationSeconds, Converter={StaticResource SecondsToWidth}}"
+                                                        Height="86"
+                                                        Background="#202A36" BorderBrush="#00D2FF" BorderThickness="1.5" CornerRadius="4"
+                                                        ToolTip.Tip="{Binding SourceFilePath}">
+                                                    <TextBlock Text="{Binding Name}" Foreground="White" FontSize="11" Margin="6,4"
+                                                               TextTrimming="CharacterEllipsis"/>
                                                 </Border>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
-                                </Canvas>
+                                </Border>
                             </Grid>
                         </Border>
                     </DataTemplate>
@@ -102,7 +144,8 @@
         <Border Grid.Row="2" Background="#161616" BorderBrush="#262626" BorderThickness="0,1" Height="24" Padding="8,0">
             <Grid ColumnDefinitions="*,Auto">
                 <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" FontSize="11" FontFamily="Consolas" Foreground="#00D2FF" VerticalAlignment="Center"/>
-                <ProgressBar Grid.Column="1" Value="{Binding ExportProgress}" Width="160" Height="8" IsVisible="{Binding IsExporting}" VerticalAlignment="Center"/>
+                <ProgressBar Grid.Column="1" Value="{Binding ExportProgress}" Minimum="0" Maximum="100"
+                             Width="160" Height="8" IsVisible="{Binding IsExporting}" VerticalAlignment="Center"/>
             </Grid>
         </Border>
 
@@ -114,22 +157,28 @@
                     <Border Grid.Column="0" Background="#1A1A1A" CornerRadius="6" Padding="12" Margin="0,0,6,0">
                         <StackPanel Spacing="8">
                             <TextBlock Text="HARSH CUT (>12 kHz)" FontWeight="Bold" Foreground="#00D2FF"/>
-                            <TextBlock Text="Cuts brittle high frequencies with high-shelf curve." FontSize="11" Foreground="#888888"/>
+                            <TextBlock Text="Cuts brittle high frequencies with high-shelf curve." FontSize="11" Foreground="#888888" TextWrapping="Wrap"/>
                             <Slider Minimum="-12" Maximum="0" Value="{Binding DspSettings.HighCutBand.GainDb}"/>
+                            <TextBlock Text="{Binding DspSettings.HighCutBand.GainDb, StringFormat='{}{0:F1} dB'}"
+                                       FontFamily="Consolas" FontSize="11" Foreground="#ECECEC"/>
                         </StackPanel>
                     </Border>
                     <Border Grid.Column="1" Background="#1A1A1A" CornerRadius="6" Padding="12" Margin="6,0">
                         <StackPanel Spacing="8">
                             <TextBlock Text="MUD SCOOP (200 - 400 Hz)" FontWeight="Bold" Foreground="#FFAA00"/>
-                            <TextBlock Text="Removes boxy, muddy low-mid build-up." FontSize="11" Foreground="#888888"/>
+                            <TextBlock Text="Removes boxy, muddy low-mid build-up." FontSize="11" Foreground="#888888" TextWrapping="Wrap"/>
                             <Slider Minimum="-12" Maximum="3" Value="{Binding DspSettings.MudScoopBand.GainDb}"/>
+                            <TextBlock Text="{Binding DspSettings.MudScoopBand.GainDb, StringFormat='{}{0:F1} dB'}"
+                                       FontFamily="Consolas" FontSize="11" Foreground="#ECECEC"/>
                         </StackPanel>
                     </Border>
                     <Border Grid.Column="2" Background="#1A1A1A" CornerRadius="6" Padding="12" Margin="6,0,0,0">
                         <StackPanel Spacing="8">
                             <TextBlock Text="TRUE-PEAK LIMITER &amp; -14 LUFS" FontWeight="Bold" Foreground="#00FFA3"/>
-                            <TextBlock Text="Inter-sample peak limiter targeting streaming standards." FontSize="11" Foreground="#888888"/>
+                            <TextBlock Text="Inter-sample peak limiter targeting streaming standards." FontSize="11" Foreground="#888888" TextWrapping="Wrap"/>
                             <Slider Minimum="-3" Maximum="-0.1" Value="{Binding DspSettings.Limiter.CeilingDb}"/>
+                            <TextBlock Text="{Binding DspSettings.Limiter.CeilingDb, StringFormat='{}{0:F1} dBTP'}"
+                                       FontFamily="Consolas" FontSize="11" Foreground="#ECECEC"/>
                         </StackPanel>
                     </Border>
                 </Grid>
