@@ -6,3 +6,39 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Build outputs & artifacts
+bin/
+obj/
+out/
+dist/
+*.zip
+
+# .NET & MSBuild cache
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+
+# NuGet
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.fragment.lock.json
+packages/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment / local settings
+.env
+.env.local
+*.local
